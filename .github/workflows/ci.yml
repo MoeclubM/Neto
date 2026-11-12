@@ -85,10 +85,6 @@ jobs:
           dotnet publish apps/windows/Neto.Windows.csproj \
             -c Release \
             -r win-x64 \
-            -p:WindowsPackageType=None \
-            -p:WindowsAppSDKSelfContained=true \
-            -p:PublishSingleFile=false \
-            -p:SelfContained=true \
             -o dist/Neto-win-x64
           test -f dist/Neto-win-x64/Neto.exe
           test -f dist/Neto-win-x64/neto_ffi.dll
