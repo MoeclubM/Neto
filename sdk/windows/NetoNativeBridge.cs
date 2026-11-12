@@ -7,6 +7,27 @@ namespace Neto.Sdk.Windows;
 public static class NetoNativeBridge
 {
     private const string DllName = "neto_ffi";
+    private static string _overrideLibraryName = DllName;
+
+    static NetoNativeBridge()
+    {
+        NativeLibrary.SetDllImportResolver(typeof(NetoNativeBridge).Assembly, (name, assembly, path) =>
+        {
+            if (name == DllName && !string.Equals(_overrideLibraryName, DllName, StringComparison.Ordinal))
+            {
+                return NativeLibrary.Load(_overrideLibraryName, assembly, path);
+            }
+            return IntPtr.Zero;
+        });
+    }
+
+    public static void UseNativeLibrary(string libraryName)
+    {
+        if (!string.IsNullOrWhiteSpace(libraryName))
+        {
+            _overrideLibraryName = libraryName.Trim();
+        }
+    }
 
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
     private static extern IntPtr neto_init(IntPtr dataDir, IntPtr appId, IntPtr userAgent);

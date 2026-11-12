@@ -85,6 +85,8 @@ class NetoVpnService : VpnService() {
             val builder = Builder()
                 .setSession(appTitle)
                 .setMtu(settings.mtu.coerceIn(1280, 9000))
+                .setBlocking(false)
+                .setMetered(false)
                 .addAddress("172.19.0.1", 30)
                 .addRoute("0.0.0.0", 0)
 
@@ -93,10 +95,10 @@ class NetoVpnService : VpnService() {
                 builder.addRoute("::", 0)
             }
 
-            val dnsServer = when (settings.vpnDnsMode) {
-                "direct" -> extractIpOrDefault(settings.directDns, "223.5.5.5")
-                "virtual" -> "172.19.0.2"
-                else -> extractIpOrDefault(settings.overseasDns, "1.1.1.1")
+            val dnsServer = if (settings.vpnDnsMode == "direct") {
+                extractIpOrDefault(settings.directDns, "223.5.5.5")
+            } else {
+                "172.19.0.2"
             }
             builder.addDnsServer(dnsServer)
 

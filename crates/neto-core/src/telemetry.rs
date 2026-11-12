@@ -184,8 +184,10 @@ pub fn sample_telemetry(connected: bool) -> TelemetrySnapshot {
             if inner.download_history.len() >= MAX_SERIES_SAMPLES {
                 inner.download_history.pop_front();
             }
-            inner.upload_history.push_back(inner.upload_speed_bps);
-            inner.download_history.push_back(inner.download_speed_bps);
+            let up_bps = inner.upload_speed_bps;
+            let down_bps = inner.download_speed_bps;
+            inner.upload_history.push_back(up_bps);
+            inner.download_history.push_back(down_bps);
         }
     } else {
         inner.upload_speed_bps = 0;

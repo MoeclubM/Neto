@@ -162,6 +162,34 @@ public sealed class NetoClient : IDisposable
     public Task UpsertManagedProfileAsync(JsonObject payload) =>
         InvokeSnapshotCallAsync("upsert_managed_profile", payload);
 
+    public async Task<JsonNode?> SyncManagedSubscriptionAsync(
+        string url,
+        string name = "Managed",
+        string id = "managed-default",
+        string flag = "aerion",
+        string? userAgent = null)
+    {
+        var payload = new JsonObject
+        {
+            ["id"] = id,
+            ["name"] = name,
+            ["url"] = url,
+            ["flag"] = flag,
+        };
+        if (!string.IsNullOrWhiteSpace(userAgent)) payload["user_agent"] = userAgent;
+        var res = await NetoNativeBridge.CallAsync("sync_managed_subscription", payload);
+        var snap = res["snapshot"].Deserialize<NetoSnapshot>();
+        if (snap != null)
+        {
+            EnqueueUi(() =>
+            {
+                Snapshot = snap;
+                SnapshotChanged?.Invoke(snap);
+            });
+        }
+        return res["user_info"];
+    }
+
     public async Task<List<NetoLogEntry>> GetLogsAsync(int limit = 150)
     {
         var res = await NetoNativeBridge.CallAsync("logs", new { limit });

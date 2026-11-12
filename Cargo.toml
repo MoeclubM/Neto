@@ -13,6 +13,10 @@ default-members = [
     "crates/neto-core",
     "crates/neto-ffi",
 ]
+exclude = [
+    "third_party/socks5-impl",
+    "third_party/tun2proxy",
+]
 
 [workspace.package]
 version = "0.1.0"

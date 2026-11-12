@@ -49,12 +49,16 @@ kotlin {
 }
 
 val netoRepoDir = projectDir.resolve("../..").canonicalFile
-android.sourceSets.getByName("main").jniLibs.directories.add(
-    layout.buildDirectory.file("generated/netoJniLibs").get().asFile.absolutePath
-)
-android.sourceSets.getByName("main").assets.srcDir(
-    netoRepoDir.resolve("crates/neto-core/assets")
-)
+extensions.configure<com.android.build.api.dsl.LibraryExtension>("android") {
+    sourceSets.getByName("main") {
+        jniLibs.directories.add(
+            layout.buildDirectory.file("generated/netoJniLibs").get().asFile.absolutePath
+        )
+        assets.directories.add(
+            netoRepoDir.resolve("crates/neto-core/assets").absolutePath
+        )
+    }
+}
 apply(from = netoRepoDir.resolve("gradle/neto-native.gradle.kts"))
 
 dependencies {

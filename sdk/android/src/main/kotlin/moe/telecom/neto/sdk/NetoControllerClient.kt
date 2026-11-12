@@ -271,6 +271,26 @@ class NetoControllerClient(
         snap
     }
 
+    suspend fun syncManagedSubscription(
+        id: String = "managed-default",
+        name: String = "Managed",
+        url: String,
+        flag: String = "aerion",
+        userAgent: String? = null,
+    ): JSONObject = withContext(Dispatchers.IO) {
+        val params = JSONObject()
+            .put("id", id)
+            .put("name", name)
+            .put("url", url)
+            .put("flag", flag)
+        if (!userAgent.isNullOrBlank()) {
+            params.put("user_agent", userAgent)
+        }
+        val res = NetoBridge.call("sync_managed_subscription", params).getJSONObject("result")
+        _snapshot.value = NetoSnapshot.fromJson(res.getJSONObject("snapshot"))
+        res
+    }
+
     fun updateDashboardWidget(id: String, enabled: Boolean? = null, moveDelta: Int? = null) {
         val params = JSONObject().put("id", id)
         if (enabled != null) params.put("enabled", enabled)

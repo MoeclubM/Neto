@@ -73,10 +73,19 @@ fn get_wintun_bin_relative_path() -> Result<std::path::PathBuf, Box<dyn std::err
 
 #[allow(dead_code)]
 fn get_crate_dir(crate_name: &str) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
-    let output = std::process::Command::new("cargo")
+    let cargo_bin = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let output = std::process::Command::new(cargo_bin)
         .arg("metadata")
         .arg("--format-version=1")
         .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
 
     let metadata = serde_json::from_slice::<serde_json::Value>(&output.stdout)?;
     let packages = metadata["packages"].as_array().ok_or("packages")?;

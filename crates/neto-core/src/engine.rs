@@ -359,18 +359,26 @@ impl NetoController {
     ) -> Result<()> {
         {
             let mut guard = self.state.lock().expect("controller state lock poisoned");
-            if let Some(existing) = guard.store.profiles.iter_mut().find(|p| p.id == id) {
-                merge_preserved_latencies(&existing.nodes, &mut payload.nodes);
-                existing.name = name.to_string();
-                existing.url = url.to_string();
-                existing.updated_at_unix = telemetry::now_ms() / 1000;
-                existing.user_info = payload.user_info;
-                existing.nodes = payload.nodes;
-                existing.proxy_groups = payload.proxy_groups;
-                existing.route_config_yaml = payload.route_config_yaml;
-                existing.rule_count = payload.rule_count;
-                existing.rules_preview = payload.rules_preview;
-                if guard.store.selected_node_index >= existing.nodes.len() {
+            let existing_nodes_len = guard
+                .store
+                .profiles
+                .iter_mut()
+                .find(|p| p.id == id)
+                .map(|existing| {
+                    merge_preserved_latencies(&existing.nodes, &mut payload.nodes);
+                    existing.name = name.to_string();
+                    existing.url = url.to_string();
+                    existing.updated_at_unix = telemetry::now_ms() / 1000;
+                    existing.user_info = payload.user_info.clone();
+                    existing.nodes = payload.nodes.clone();
+                    existing.proxy_groups = payload.proxy_groups.clone();
+                    existing.route_config_yaml = payload.route_config_yaml.clone();
+                    existing.rule_count = payload.rule_count;
+                    existing.rules_preview = payload.rules_preview.clone();
+                    existing.nodes.len()
+                });
+            if let Some(nodes_len) = existing_nodes_len {
+                if guard.store.selected_node_index >= nodes_len {
                     guard.store.selected_node_index = 0;
                 }
             } else {
@@ -398,6 +406,31 @@ impl NetoController {
         self.persist()
     }
 
+    pub async fn sync_managed_subscription(
+        &self,
+        id: &str,
+        name: &str,
+        url: &str,
+        flag: &str,
+        user_agent_override: Option<&str>,
+    ) -> Result<Option<SubscriptionUserInfo>> {
+        let clean_url = url.trim();
+        ensure!(!clean_url.is_empty(), "subscription URL is empty");
+        let effective_flag = if flag.trim().is_empty() {
+            "aerion"
+        } else {
+            flag.trim()
+        };
+        let ua = user_agent_override
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&self.user_agent);
+        let payload = fetch_and_parse_subscription(clean_url, effective_flag, Some(ua), None).await?;
+        let user_info = payload.user_info.clone();
+        self.upsert_managed_profile(id, name, clean_url, payload)?;
+        Ok(user_info)
+    }
+
     pub async fn refresh_profile(&self, profile_id: Option<&str>) -> Result<()> {
         let (id, url, flag) = {
             let guard = self.state.lock().expect("controller state lock poisoned");
@@ -422,18 +455,26 @@ impl NetoController {
             fetch_and_parse_subscription(&url, &flag, Some(&self.user_agent), None).await?;
         {
             let mut guard = self.state.lock().expect("controller state lock poisoned");
-            if let Some(prof) = guard.store.profiles.iter_mut().find(|p| p.id == id) {
-                merge_preserved_latencies(&prof.nodes, &mut payload.nodes);
-                prof.updated_at_unix = telemetry::now_ms() / 1000;
-                prof.user_info = payload.user_info;
-                prof.nodes = payload.nodes;
-                prof.proxy_groups = payload.proxy_groups;
-                prof.route_config_yaml = payload.route_config_yaml;
-                prof.rule_count = payload.rule_count;
-                prof.rules_preview = payload.rules_preview;
-                if guard.store.selected_node_index >= prof.nodes.len() {
-                    guard.store.selected_node_index = 0;
-                }
+            let updated_len = guard
+                .store
+                .profiles
+                .iter_mut()
+                .find(|p| p.id == id)
+                .map(|prof| {
+                    merge_preserved_latencies(&prof.nodes, &mut payload.nodes);
+                    prof.updated_at_unix = telemetry::now_ms() / 1000;
+                    prof.user_info = payload.user_info;
+                    prof.nodes = payload.nodes;
+                    prof.proxy_groups = payload.proxy_groups;
+                    prof.route_config_yaml = payload.route_config_yaml;
+                    prof.rule_count = payload.rule_count;
+                    prof.rules_preview = payload.rules_preview;
+                    prof.nodes.len()
+                });
+            if let Some(nodes_len) = updated_len
+                && guard.store.selected_node_index >= nodes_len
+            {
+                guard.store.selected_node_index = 0;
             }
         }
         self.persist()
@@ -502,23 +543,27 @@ impl NetoController {
     pub fn select_group_proxy(&self, group_name: &str, proxy_name: &str) -> Result<()> {
         {
             let mut guard = self.state.lock().expect("controller state lock poisoned");
-            let active_id = guard.store.active_profile_id.clone();
-            let prof = active_id
+            let prof_idx = guard
+                .store
+                .active_profile_id
                 .as_deref()
-                .and_then(|id| guard.store.profiles.iter_mut().find(|p| p.id == id))
-                .or_else(|| guard.store.profiles.first_mut())
-                .context("no active profile")?;
-            let group = prof
-                .proxy_groups
-                .iter_mut()
-                .find(|g| g.name == group_name)
-                .with_context(|| format!("proxy group not found: {group_name}"))?;
-            group.selected = Some(proxy_name.to_string());
-            if let Some(node_idx) = prof
-                .nodes
-                .iter()
-                .position(|n| n.name == proxy_name)
-            {
+                .and_then(|id| guard.store.profiles.iter().position(|p| p.id == id))
+                .unwrap_or(0);
+            let matched_node_idx = {
+                let prof = guard
+                    .store
+                    .profiles
+                    .get_mut(prof_idx)
+                    .context("no active profile")?;
+                let group = prof
+                    .proxy_groups
+                    .iter_mut()
+                    .find(|g| g.name == group_name)
+                    .with_context(|| format!("proxy group not found: {group_name}"))?;
+                group.selected = Some(proxy_name.to_string());
+                prof.nodes.iter().position(|n| n.name == proxy_name)
+            };
+            if let Some(node_idx) = matched_node_idx {
                 guard.store.selected_node_index = node_idx;
             }
         }
@@ -588,14 +633,14 @@ impl NetoController {
             if guard.nodes_testing {
                 return Ok(());
             }
-            let prof = active_profile_ref(&guard.store).context("no active profile")?;
+            let (nodes, profile_id) = {
+                let prof = active_profile_ref(&guard.store).context("no active profile")?;
+                (prof.nodes.clone(), prof.id.clone())
+            };
+            let dns_url = guard.store.settings.node_dns.clone();
+            let test_url = guard.store.settings.node_test_url.clone();
             guard.nodes_testing = true;
-            (
-                prof.nodes.clone(),
-                guard.store.settings.node_dns.clone(),
-                guard.store.settings.node_test_url.clone(),
-                prof.id.clone(),
-            )
+            (nodes, dns_url, test_url, profile_id)
         };
 
         let (target_host, target_port, target_tls) = match parse_probe_url(&test_url) {
@@ -1358,6 +1403,32 @@ impl NetoController {
                 );
                 self.upsert_managed_profile(&req.id, &req.name, &req.url, payload)?;
                 Ok(serde_json::to_value(self.snapshot())?)
+            }
+            "sync_managed_subscription" => {
+                let id = params
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("managed-default");
+                let name = params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Managed");
+                let url = params
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .context("missing url")?;
+                let flag = params
+                    .get("flag")
+                    .and_then(Value::as_str)
+                    .unwrap_or("aerion");
+                let ua = params.get("user_agent").and_then(Value::as_str);
+                let user_info = self
+                    .sync_managed_subscription(id, name, url, flag, ua)
+                    .await?;
+                Ok(json!({
+                    "user_info": user_info,
+                    "snapshot": self.snapshot(),
+                }))
             }
             "update_dashboard_widget" => {
                 let id: DashboardWidgetId =

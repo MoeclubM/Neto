@@ -180,3 +180,5 @@ default-features = false
 
 [patch.crates-io]
 socks5-impl = { path = "../socks5-impl" }
+
+[workspace]
