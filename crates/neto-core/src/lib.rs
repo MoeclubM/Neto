@@ -1,0 +1,31 @@
+pub mod config_compat;
+pub mod dashboard;
+pub mod doh;
+pub mod engine;
+pub mod http_proxy;
+pub mod mihomo_sanitize;
+pub mod profile;
+pub mod protocol;
+pub mod route;
+pub mod runtime;
+pub mod state;
+pub mod telemetry;
+
+pub use dashboard::{DashboardWidgetId, DashboardWidgetItem};
+pub use engine::{NetoController, PlatformHooks, init_rustls_provider};
+pub use mihomo_sanitize::sanitize_mihomo_route_yaml;
+pub use profile::{
+    NodeSummary, ParsedProfilePayload, ProfileRecord, ProxyGroupSummary, SubscriptionUserInfo,
+    build_profile_from_raw_nodes, fetch_and_parse_subscription, parse_yaml_profile,
+};
+pub use route::{inspect_route_config_yaml, start_route_from_json, stop_route, test_route_from_json};
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+pub use runtime::shutdown_vpns;
+pub use runtime::{
+    set_event_callback, set_log_callback, start_socks_from_json, start_vpn_from_json, stop_socks,
+    stop_vpn, test_node_from_json,
+};
+pub use state::{
+    ConnectionSnapshot, EngineSnapshot, NetoSettings, NodeSortMode, ProfileBrief, RoutingMode,
+};
+pub use telemetry::{LogEntry, TelemetrySnapshot};

@@ -1,0 +1,89 @@
+name: Release
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v6
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: 'platforms;android-37.0 build-tools;36.1.0 ndk;28.2.13676358'
+      - run: rustup target add aarch64-linux-android
+      - run: |
+          chmod +x gradlew
+          ./gradlew :apps:android:assembleRelease --build-cache --stacktrace
+          apk="$(find apps/android/build/outputs/apk -type f -name '*-arm64-v8a-release.apk' -print -quit)"
+          mkdir -p dist
+          cp "$apk" "dist/Neto-${GITHUB_REF_NAME}-android-arm64-v8a.apk"
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/Neto-${{ github.ref_name }}-android-arm64-v8a.apk
+          generate_release_notes: true
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '9.0.x'
+      - shell: bash
+        run: |
+          choco install nasm --no-progress --yes
+          echo 'C:/Program Files/NASM' >> "$GITHUB_PATH"
+      - shell: bash
+        run: |
+          cargo build --release -p neto-ffi
+          mkdir -p apps/windows/native dist
+          cp target/release/neto_ffi.dll apps/windows/native/
+          cp target/release/wintun.dll apps/windows/native/
+          dotnet publish apps/windows/Neto.Windows.csproj -c Release -r win-x64 -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true -p:PublishSingleFile=false -p:SelfContained=true -o dist/Neto-win-x64
+          powershell -NoProfile -Command "Compress-Archive -Path 'dist/Neto-win-x64/*' -DestinationPath 'dist/Neto-${GITHUB_REF_NAME}-windows-x64.zip' -Force"
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/Neto-${{ github.ref_name }}-windows-x64.zip
+
+  linux-wayland:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libclang-dev libgtk-4-dev libadwaita-1-dev dpkg-dev
+      - run: |
+          ver="${GITHUB_REF_NAME#v}"
+          cargo build --release -p neto-linux
+          pkg_root="dist/pkg-neto_${{ matrix.arch }}"
+          mkdir -p "$pkg_root/DEBIAN" "$pkg_root/usr/bin" "$pkg_root/usr/share/applications"
+          cp target/release/neto "$pkg_root/usr/bin/neto"
+          chmod 0755 "$pkg_root/usr/bin/neto"
+          cp apps/linux/data/io.github.moeclubm.Neto.desktop "$pkg_root/usr/share/applications/"
+          printf 'Package: neto\nVersion: %s\nSection: net\nPriority: optional\nArchitecture: %s\nDepends: libc6, libgtk-4-1, libadwaita-1-0\nMaintainer: MoeclubM\nDescription: Neto native subscription and proxy client for Linux Wayland\n' "$ver" "${{ matrix.arch }}" > "$pkg_root/DEBIAN/control"
+          dpkg-deb --root-owner-group --build "$pkg_root" "dist/neto_${ver}_${{ matrix.arch }}.deb"
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/neto_*_${{ matrix.arch }}.deb

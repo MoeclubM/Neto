@@ -1,0 +1,14 @@
+[package]
+name = "neto-platform-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+neto-core = { path = "../neto-core" }
+tokio.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = "0.3.7"

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Neto
+Exec=neto
+Icon=network-vpn
+Terminal=false
+Categories=Network;
+StartupWMClass=io.github.moeclubm.Neto

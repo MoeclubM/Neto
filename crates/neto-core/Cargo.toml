@@ -1,0 +1,20 @@
+[package]
+name = "neto-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aerion.workspace = true
+anyhow.workspace = true
+base64.workspace = true
+log.workspace = true
+once_cell.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+webpki-roots.workspace = true
