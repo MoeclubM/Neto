@@ -12,14 +12,16 @@ pub mod route;
 pub mod runtime;
 pub mod state;
 pub mod telemetry;
+pub mod tun_service;
 
 pub use connections::{
-    ActiveConnectionEntry, ConnectionsSnapshot, close_all_connections, close_connection,
-    snapshot_connections,
+    ActiveConnectionEntry, ConnectionsSnapshot, clear_closed_connections, close_all_connections,
+    close_connection, snapshot_connections,
 };
 pub use dashboard::{DashboardWidgetId, DashboardWidgetItem};
 pub use diagnostics::{
-    ConnectivityTargetResult, NetworkCheckResult, RuleItem, parse_rule_items, run_network_check,
+    ConnectivityTargetResult, NetworkCheckResult, RuleItem, parse_rule_items,
+    prepend_custom_route_rule, run_network_check, validate_custom_route_yaml,
 };
 pub use engine::{NetoController, PlatformHooks, init_rustls_provider};
 pub use mihomo_sanitize::sanitize_mihomo_route_yaml;

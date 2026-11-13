@@ -6,7 +6,11 @@ mod imp {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr::{null, null_mut};
     use std::sync::Arc;
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE};
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_CANCELLED, ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SUCCESS, GetLastError,
+        HANDLE, WAIT_OBJECT_0,
+    };
     use windows_sys::Win32::Networking::WinInet::{
         INTERNET_OPTION_PER_CONNECTION_OPTION, INTERNET_OPTION_REFRESH,
         INTERNET_OPTION_SETTINGS_CHANGED, INTERNET_PER_CONN_FLAGS, INTERNET_PER_CONN_OPTION_LISTW,
@@ -21,7 +25,17 @@ mod imp {
         RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW, RegOpenKeyExW,
         RegQueryValueExW, RegSetValueExW,
     };
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    use windows_sys::Win32::System::Services::{
+        CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, SC_HANDLE,
+        SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_STATUS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, GetExitCodeProcess, INFINITE, OpenProcessToken, WaitForSingleObject,
+    };
+    use windows_sys::Win32::UI::Shell::{
+        SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
     const INTERNET_SETTINGS_KEY: &str =
         r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
@@ -58,6 +72,10 @@ mod imp {
     }
 
     impl PlatformHooks for WindowsPlatformHooks {
+        fn app_id(&self) -> &str {
+            &self.app_id
+        }
+
         fn set_system_proxy(
             &self,
             host: &str,
@@ -80,8 +98,114 @@ mod imp {
         }
 
         fn can_use_tun(&self) -> bool {
-            is_process_elevated()
+            query_tun_service_status(&self.app_id) == "running" || is_process_elevated()
         }
+
+        fn tun_service_status(&self) -> &'static str {
+            query_tun_service_status(&self.app_id)
+        }
+
+        fn install_tun_service(&self) -> Result<()> {
+            run_service_action(&self.app_id, "install")
+        }
+
+        fn uninstall_tun_service(&self) -> Result<()> {
+            run_service_action(&self.app_id, "uninstall")
+        }
+    }
+
+    pub fn query_tun_service_status(app_id: &str) -> &'static str {
+        let svc_name = wide_null(&neto_core::tun_service::service_name(app_id));
+        unsafe {
+            let scm: SC_HANDLE = OpenSCManagerW(null(), null(), SC_MANAGER_CONNECT);
+            if scm.is_null() {
+                return "not_installed";
+            }
+            let svc: SC_HANDLE = OpenServiceW(scm, svc_name.as_ptr(), SERVICE_QUERY_STATUS);
+            if svc.is_null() {
+                let err = GetLastError();
+                CloseServiceHandle(scm);
+                return if err == ERROR_SERVICE_DOES_NOT_EXIST {
+                    "not_installed"
+                } else {
+                    "stopped"
+                };
+            }
+            let mut status: SERVICE_STATUS = std::mem::zeroed();
+            let ok = QueryServiceStatus(svc, &mut status);
+            CloseServiceHandle(svc);
+            CloseServiceHandle(scm);
+            if ok != 0 && status.dwCurrentState == SERVICE_RUNNING {
+                "running"
+            } else {
+                "stopped"
+            }
+        }
+    }
+
+    fn service_exe_path() -> Result<std::path::PathBuf> {
+        let current = std::env::current_exe()?;
+        let dir = current
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("无法定位程序所在目录"))?;
+        let exe = dir.join("neto-service.exe");
+        if !exe.is_file() {
+            bail!("未找到 TUN 服务程序：{}", exe.display());
+        }
+        Ok(exe)
+    }
+
+    fn run_service_action(app_id: &str, action: &str) -> Result<()> {
+        let exe = service_exe_path()?;
+        let safe_id = app_id.replace('"', "");
+        if is_process_elevated() {
+            let out = std::process::Command::new(&exe)
+                .args([action, "--id", &safe_id])
+                .creation_flags(0x0800_0000)
+                .output()?;
+            if !out.status.success() {
+                let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                bail!(if err.is_empty() {
+                    format!("服务操作 {action} 失败")
+                } else {
+                    err
+                });
+            }
+            return Ok(());
+        }
+
+        let verb_w = wide_null("runas");
+        let file_w = wide_null(&exe.to_string_lossy());
+        let params_w = wide_null(&format!("{action} --id \"{safe_id}\""));
+        let dir_w = exe.parent().map(|p| wide_null(&p.to_string_lossy()));
+
+        unsafe {
+            let mut sei: SHELLEXECUTEINFOW = std::mem::zeroed();
+            sei.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
+            sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+            sei.lpVerb = verb_w.as_ptr();
+            sei.lpFile = file_w.as_ptr();
+            sei.lpParameters = params_w.as_ptr();
+            sei.lpDirectory = dir_w.as_ref().map_or(null(), |v| v.as_ptr());
+            sei.nShow = SW_HIDE;
+            if ShellExecuteExW(&mut sei) == 0 {
+                let code = GetLastError();
+                if code == ERROR_CANCELLED {
+                    bail!("已取消管理员授权");
+                }
+                bail!("启动提权服务安装器失败 (错误码 {code})");
+            }
+            if !sei.hProcess.is_null() {
+                let wait_res = WaitForSingleObject(sei.hProcess, INFINITE);
+                let mut exit_code = 1u32;
+                let got_code = GetExitCodeProcess(sei.hProcess, &mut exit_code) != 0;
+                CloseHandle(sei.hProcess);
+                if wait_res != WAIT_OBJECT_0 || !got_code || exit_code != 0 {
+                    bail!("TUN 服务{action}执行失败 (退出码 {exit_code})");
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn is_process_elevated() -> bool {

@@ -8,11 +8,8 @@ pub enum DashboardWidgetId {
     ActiveConnections,
     ExitCheck,
     LatencyProbe,
-    RuntimeInfo,
-    OutboundMode,
-    CurrentOutbound,
-    NetworkTakeover,
     ProfilesSummary,
+    RuntimeInfo,
 }
 
 impl DashboardWidgetId {
@@ -22,19 +19,13 @@ impl DashboardWidgetId {
         Self::ActiveConnections,
         Self::ExitCheck,
         Self::LatencyProbe,
-        Self::RuntimeInfo,
-        Self::OutboundMode,
-        Self::CurrentOutbound,
-        Self::NetworkTakeover,
         Self::ProfilesSummary,
+        Self::RuntimeInfo,
     ];
 
     pub fn key(self) -> &'static str {
         match self {
             Self::NetworkSpeed => "network_speed",
-            Self::OutboundMode => "outbound_mode",
-            Self::CurrentOutbound => "current_outbound",
-            Self::NetworkTakeover => "network_takeover",
             Self::ActiveConnections => "active_connections",
             Self::ExitCheck => "exit_check",
             Self::TrafficUsage => "traffic_usage",
@@ -47,9 +38,6 @@ impl DashboardWidgetId {
     pub fn title_zh(self) -> &'static str {
         match self {
             Self::NetworkSpeed => "实时速率",
-            Self::OutboundMode => "出站模式",
-            Self::CurrentOutbound => "当前节点",
-            Self::NetworkTakeover => "网络接管",
             Self::ActiveConnections => "活跃会话",
             Self::ExitCheck => "出口检测",
             Self::TrafficUsage => "流量统计",
@@ -67,6 +55,7 @@ impl DashboardWidgetId {
                 | Self::ActiveConnections
                 | Self::ExitCheck
                 | Self::LatencyProbe
+                | Self::ProfilesSummary
                 | Self::RuntimeInfo
         )
     }
@@ -76,6 +65,20 @@ impl DashboardWidgetId {
 pub struct DashboardWidgetItem {
     pub id: DashboardWidgetId,
     pub enabled: bool,
+}
+
+pub fn deserialize_dashboard_widgets<'de, D>(
+    deserializer: D,
+) -> Result<Vec<DashboardWidgetItem>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Vec<serde_json::Value> = Vec::deserialize(deserializer)?;
+    let parsed: Vec<DashboardWidgetItem> = raw
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect();
+    Ok(normalize_dashboard_widgets(&parsed))
 }
 
 pub fn default_dashboard_widgets() -> Vec<DashboardWidgetItem> {

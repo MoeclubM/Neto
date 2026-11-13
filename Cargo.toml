@@ -7,6 +7,7 @@ members = [
     "crates/neto-platform-linux",
     "crates/neto-ffi",
     "crates/neto-ui-gtk",
+    "crates/neto-service",
     "apps/linux",
 ]
 default-members = [
@@ -19,12 +20,12 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.0.4"
+version = "0.0.5"
 edition = "2024"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-aerion = { git = "https://github.com/MoeclubM/Aerion.git", rev = "d9ffb5ce0648d94514094cc4dca11f6fc6061928", default-features = false }
+aerion = { git = "https://github.com/MoeclubM/Aerion.git", rev = "e92f81451b971ad31fbc781a58d58c37618e81e3", default-features = false }
 anyhow = "1.0.104"
 base64 = "0.22.1"
 log = "0.4.34"

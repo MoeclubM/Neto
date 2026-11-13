@@ -3,7 +3,10 @@ use crate::dashboard::{
     DashboardWidgetId, DashboardWidgetItem, default_dashboard_widgets, move_dashboard_widget,
     normalize_dashboard_widgets, set_dashboard_widget_enabled,
 };
-use crate::diagnostics::{NetworkCheckResult, parse_rule_items, run_network_check};
+use crate::diagnostics::{
+    NetworkCheckResult, parse_rule_items, prepend_custom_route_rule, run_network_check,
+    validate_custom_route_yaml,
+};
 use crate::doh::prepare_node_for_connect;
 use crate::http_proxy::HttpProxyBridge;
 use crate::profile::{
@@ -32,6 +35,10 @@ use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 use tokio::task::JoinSet;
 
 pub trait PlatformHooks: Send + Sync {
+    fn app_id(&self) -> &str {
+        "Neto"
+    }
+
     fn set_system_proxy(
         &self,
         _host: &str,
@@ -52,6 +59,18 @@ pub trait PlatformHooks: Send + Sync {
 
     fn can_use_tun(&self) -> bool {
         true
+    }
+
+    fn tun_service_status(&self) -> &'static str {
+        "unsupported"
+    }
+
+    fn install_tun_service(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn uninstall_tun_service(&self) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -145,6 +164,7 @@ impl NetoController {
             .map(|b| format!("127.0.0.1:{}", b.port()))
             .unwrap_or_default();
         let can_use_tun = self.hooks.can_use_tun();
+        let tun_service_status = self.hooks.tun_service_status().to_string();
 
         let connection = match &guard.active {
             Some(rt) => ConnectionSnapshot {
@@ -162,6 +182,7 @@ impl NetoController {
                 system_proxy_active: guard.system_proxy_active,
                 tun_active: rt.kind == SessionKind::Tun,
                 can_use_tun,
+                tun_service_status,
                 active_node_name: rt.node_name.clone(),
                 active_node_protocol: rt.node_protocol.clone(),
                 last_error: guard.last_error.clone(),
@@ -181,6 +202,7 @@ impl NetoController {
                 system_proxy_active: guard.system_proxy_active,
                 tun_active: false,
                 can_use_tun,
+                tun_service_status,
                 active_node_name: String::new(),
                 active_node_protocol: String::new(),
                 last_error: guard.last_error.clone(),
@@ -1180,6 +1202,7 @@ impl NetoController {
         let vpn_req = StartVpnRequest {
             node: resolved_node,
             route: route_req,
+            pipe_name: None,
             tun_fd: Some(tun_fd),
             mtu: settings.mtu,
             dns: settings.vpn_dns_mode.clone(),
@@ -1235,7 +1258,11 @@ impl NetoController {
         telemetry::reset_session_telemetry();
         let want_tun = settings.tun_enabled;
         if want_tun && !self.hooks.can_use_tun() {
-            bail!("TUN 模式需要管理员权限或 /dev/net/tun 访问权限");
+            bail!(if cfg!(target_os = "windows") {
+                "TUN 模式需要安装并启动系统服务"
+            } else {
+                "TUN 模式需要管理员权限或 /dev/net/tun 访问权限"
+            });
         }
 
         let (kind, session_id, socks_addr) = if want_tun {
@@ -1268,9 +1295,15 @@ impl NetoController {
             } else {
                 &settings.overseas_dns
             });
+            #[cfg(target_os = "windows")]
+            let pipe_name = (self.hooks.tun_service_status() == "running")
+                .then(|| crate::tun_service::pipe_name(self.hooks.app_id()));
+            #[cfg(not(target_os = "windows"))]
+            let pipe_name = None;
             let req = StartVpnRequest {
                 node: resolved_node,
                 route: route_req,
+                pipe_name,
                 tun_fd: None,
                 mtu: settings.mtu,
                 dns: settings.vpn_dns_mode.clone(),
@@ -1455,6 +1488,11 @@ impl NetoController {
     }
 
     pub fn update_settings(&self, patch: &Value) -> Result<NetoSettings> {
+        if let Some(custom_yaml) = patch.get("custom_route_yaml").and_then(Value::as_str)
+            && !custom_yaml.trim().is_empty()
+        {
+            validate_custom_route_yaml(custom_yaml)?;
+        }
         let (updated, autostart_changed) = {
             let mut st = self.state.lock().expect("controller state lock poisoned");
             let prev_autostart = st.store.settings.autostart;
@@ -1564,6 +1602,58 @@ impl NetoController {
             "close_all_connections" => {
                 let count = connections::close_all_connections();
                 Ok(json!({ "ok": true, "closed_count": count }))
+            }
+            "clear_closed_connections" => {
+                connections::clear_closed_connections();
+                Ok(json!({ "ok": true }))
+            }
+            "install_tun_service" => {
+                let hooks = self.hooks.clone();
+                tokio::task::spawn_blocking(move || hooks.install_tun_service()).await??;
+                Ok(serde_json::to_value(self.snapshot())?)
+            }
+            "uninstall_tun_service" => {
+                let tun_active = self
+                    .state
+                    .lock()
+                    .expect("controller state lock poisoned")
+                    .active
+                    .as_ref()
+                    .is_some_and(|rt| rt.kind == SessionKind::Tun);
+                if tun_active {
+                    self.disconnect().await?;
+                }
+                let hooks = self.hooks.clone();
+                tokio::task::spawn_blocking(move || hooks.uninstall_tun_service()).await??;
+                Ok(serde_json::to_value(self.snapshot())?)
+            }
+            "add_custom_rule" => {
+                let rule = params
+                    .get("rule")
+                    .and_then(Value::as_str)
+                    .context("missing rule")?;
+                let (base_yaml, custom_yaml) = {
+                    let st = self.state.lock().expect("controller state lock poisoned");
+                    let base = active_profile_ref(&st.store)
+                        .and_then(|p| p.route_config_yaml.clone())
+                        .unwrap_or_default();
+                    (base, st.store.settings.custom_route_yaml.clone())
+                };
+                let next_yaml = prepend_custom_route_rule(&base_yaml, &custom_yaml, rule)?;
+                self.update_settings(&json!({ "custom_route_yaml": next_yaml }))?;
+                #[cfg(not(target_os = "android"))]
+                {
+                    let is_active = self
+                        .state
+                        .lock()
+                        .expect("controller state lock poisoned")
+                        .active
+                        .is_some();
+                    if is_active {
+                        self.connect().await?;
+                    }
+                }
+                Ok(serde_json::to_value(self.snapshot())?)
             }
             "check_connectivity" => {
                 let result = self.check_connectivity().await?;

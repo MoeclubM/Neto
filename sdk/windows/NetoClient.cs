@@ -108,6 +108,26 @@ public sealed class NetoClient : IDisposable
     public Task SetRoutingModeAsync(string mode) => InvokeSnapshotCallAsync("set_routing_mode", new { mode });
     public Task SetSystemProxyAsync(bool enabled) => InvokeSnapshotCallAsync("set_system_proxy_enabled", new { enabled });
     public Task SetTunEnabledAsync(bool enabled) => InvokeSnapshotCallAsync("set_tun_enabled", new { enabled });
+    public Task InstallTunServiceAsync() => InvokeSnapshotCallAsync("install_tun_service", null);
+    public Task UninstallTunServiceAsync() => InvokeSnapshotCallAsync("uninstall_tun_service", null);
+    public Task AddCustomRuleAsync(string rule) => InvokeSnapshotCallAsync("add_custom_rule", new { rule });
+
+    public async Task EnableTunAsync(bool enabled)
+    {
+        if (enabled &&
+            !Snapshot.Connection.CanUseTun &&
+            !string.Equals(Snapshot.Connection.TunServiceStatus, "unsupported", StringComparison.OrdinalIgnoreCase))
+        {
+            await InstallTunServiceAsync();
+            if (LastActionError != null || !Snapshot.Connection.CanUseTun)
+            {
+                EnqueueUi(() => SnapshotChanged?.Invoke(Snapshot));
+                return;
+            }
+        }
+        await SetTunEnabledAsync(enabled);
+    }
+
     public Task UpdateSettingsAsync(JsonObject patch) => InvokeSnapshotCallAsync("update_settings", patch);
     public Task UpdateNetworkSettingsAsync(JsonObject patch) => InvokeSnapshotCallAsync("update_network_settings", patch);
     public Task RefreshProfileAsync(string? id = null) =>
@@ -203,6 +223,17 @@ public sealed class NetoClient : IDisposable
         {
         }
         await RefreshSnapshotAsync();
+    }
+
+    public async Task ClearClosedConnectionsAsync()
+    {
+        try
+        {
+            await NetoNativeBridge.CallAsync("clear_closed_connections");
+        }
+        catch
+        {
+        }
     }
 
     public async Task<NetoRulesListResult> GetRulesAsync(string filter = "", int limit = 500)

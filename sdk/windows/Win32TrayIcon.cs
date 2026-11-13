@@ -63,7 +63,6 @@ public sealed class Win32TrayIcon : IDisposable
     public event Action? ToggleTunRequested;
     public event Action? CopyProxyCommandRequested;
     public event Action? CloseAllConnectionsRequested;
-    public event Action? RestartElevatedRequested;
     public event Action? SessionEnding;
     public event Action? ExitRequested;
 
@@ -238,13 +237,9 @@ public sealed class Win32TrayIcon : IDisposable
 
             AppendMenuW(hMenu, MF_SEPARATOR, 0, null);
             AppendMenuW(hMenu, MF_STRING | (SystemProxyEnabled ? MF_CHECKED : 0), 20, "系统代理");
-            AppendMenuW(hMenu, MF_STRING | (TunEnabled ? MF_CHECKED : 0), 21, CanUseTun ? "TUN 接管" : "TUN 接管（需管理员）");
+            AppendMenuW(hMenu, MF_STRING | (TunEnabled ? MF_CHECKED : 0), 21, "TUN 接管");
             AppendMenuW(hMenu, MF_STRING, 22, "复制终端代理命令");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, null);
-            if (!CanUseTun)
-            {
-                AppendMenuW(hMenu, MF_STRING, 23, "以管理员身份重启");
-            }
             AppendMenuW(hMenu, MF_STRING, 30, "退出");
 
             GetCursorPos(out var pt);
@@ -269,7 +264,6 @@ public sealed class Win32TrayIcon : IDisposable
                 case 21: ToggleTunRequested?.Invoke(); break;
                 case 22: CopyProxyCommandRequested?.Invoke(); break;
                 case 24: CloseAllConnectionsRequested?.Invoke(); break;
-                case 23: RestartElevatedRequested?.Invoke(); break;
                 case 30: ExitRequested?.Invoke(); break;
             }
         }

@@ -13,38 +13,29 @@ public sealed class ConnectionsPageView
     public StackPanel HeaderActions { get; }
     private readonly NetoClient _client;
     private readonly Button _tabActiveBtn;
-    private readonly Button _tabRulesBtn;
-    private readonly Grid _activePane;
-    private readonly Grid _rulesPane;
+    private readonly Button _tabClosedBtn;
     private readonly TextBox _connSearchBox;
     private readonly ComboBox _connNetCombo;
+    private readonly ComboBox _connSortCombo;
     private readonly TextBlock _connSummaryLabel;
     private readonly Button _pauseBtn;
-    private readonly Button _closeAllBtn;
+    private readonly Button _actionAllBtn;
     private readonly StackPanel _connListPanel;
-    private readonly Border _testerCard;
-    private readonly Button _toggleTesterBtn;
-    private readonly TextBox _routeTargetBox;
-    private readonly ComboBox _routeNetCombo;
-    private readonly TextBlock _routeResultText;
-    private readonly TextBox _ruleSearchBox;
-    private readonly TextBlock _ruleCountLabel;
-    private readonly StackPanel _rulesListPanel;
 
     private string _subTab = "active";
     private string _connFilter = "";
     private string _connNetFilter = "all";
+    private int _sortIndex;
     private bool _paused;
     private bool _fetchingConns;
-    private bool _fetchingRules;
-    private bool _rulesLoadedOnce;
+    private bool _dialogOpen;
     private string _lastConnSig = "";
-    private string _lastRuleAccountSig = "";
 
     public ConnectionsPageView(NetoClient client, bool detachHeaderActions = false)
     {
         _client = client;
         Root = new Grid { RowSpacing = detachHeaderActions ? 0 : 8 };
+        Root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         Root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         Root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
@@ -55,19 +46,21 @@ public sealed class ConnectionsPageView
             Spacing = 6,
         };
         _tabActiveBtn = new Button { Content = "活跃会话" };
-        _tabRulesBtn = new Button { Content = "分流规则" };
+        _tabClosedBtn = new Button { Content = "已关闭" };
         _tabActiveBtn.Click += async (_, _) =>
         {
             SwitchSubTab("active");
-            if (!_paused) await RefreshConnectionsAsync();
+            _lastConnSig = "";
+            await RefreshConnectionsAsync(forceRender: true);
         };
-        _tabRulesBtn.Click += async (_, _) =>
+        _tabClosedBtn.Click += async (_, _) =>
         {
-            SwitchSubTab("rules");
-            if (!_rulesLoadedOnce) await RefreshRulesAsync();
+            SwitchSubTab("closed");
+            _lastConnSig = "";
+            await RefreshConnectionsAsync(forceRender: true);
         };
         HeaderActions.Children.Add(_tabActiveBtn);
-        HeaderActions.Children.Add(_tabRulesBtn);
+        HeaderActions.Children.Add(_tabClosedBtn);
 
         if (!detachHeaderActions)
         {
@@ -81,20 +74,21 @@ public sealed class ConnectionsPageView
             Root.Children.Add(inlineHeader);
         }
 
-        _activePane = new Grid { RowSpacing = 8 };
-        _activePane.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        _activePane.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-
-        var connToolbar = new Grid
+        var topStack = new StackPanel
         {
             MaxWidth = 860,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            Padding = new Thickness(18, 6, 18, 0),
+            Padding = new Thickness(18, 6, 18, 4),
+            Spacing = 6,
+        };
+
+        var connToolbar = new Grid
+        {
             ColumnSpacing = 8,
         };
         connToolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        connToolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110) });
-        connToolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        connToolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(102) });
+        connToolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(112) });
         connToolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         connToolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
@@ -116,12 +110,24 @@ public sealed class ConnectionsPageView
             _lastConnSig = "";
             _ = RefreshConnectionsAsync(forceRender: true);
         };
+        _connSortCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
+        _connSortCombo.Items.Add("最新");
+        _connSortCombo.Items.Add("下载速率");
+        _connSortCombo.Items.Add("上传速率");
+        _connSortCombo.Items.Add("总流量");
+        _connSortCombo.Items.Add("域名");
+        _connSortCombo.SelectedIndex = 0;
+        _connSortCombo.SelectionChanged += (_, _) =>
+        {
+            _sortIndex = Math.Clamp(_connSortCombo.SelectedIndex, 0, 4);
+            _lastConnSig = "";
+            _ = RefreshConnectionsAsync(forceRender: true);
+        };
+
         _connSummaryLabel = new TextBlock
         {
             FontSize = 12,
             FontFamily = new FontFamily("Consolas"),
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(4, 0, 4, 0),
             Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
         };
         _pauseBtn = new Button { Content = "暂停" };
@@ -131,23 +137,35 @@ public sealed class ConnectionsPageView
             _pauseBtn.Content = _paused ? "继续" : "暂停";
             NetoUiFactory.ApplyPrimaryButton(_pauseBtn, _paused);
         };
-        _closeAllBtn = new Button { Content = "断开全部" };
-        _closeAllBtn.Click += async (_, _) =>
+        _actionAllBtn = new Button { Content = "断开全部" };
+        _actionAllBtn.Click += async (_, _) =>
         {
-            await _client.CloseAllConnectionsAsync();
+            if (_subTab == "closed")
+            {
+                await _client.ClearClosedConnectionsAsync();
+            }
+            else
+            {
+                await _client.CloseAllConnectionsAsync();
+            }
             _lastConnSig = "";
             await RefreshConnectionsAsync(forceRender: true);
         };
 
         Grid.SetColumn(_connNetCombo, 1);
-        Grid.SetColumn(_connSummaryLabel, 2);
+        Grid.SetColumn(_connSortCombo, 2);
         Grid.SetColumn(_pauseBtn, 3);
-        Grid.SetColumn(_closeAllBtn, 4);
+        Grid.SetColumn(_actionAllBtn, 4);
         connToolbar.Children.Add(_connSearchBox);
         connToolbar.Children.Add(_connNetCombo);
-        connToolbar.Children.Add(_connSummaryLabel);
+        connToolbar.Children.Add(_connSortCombo);
         connToolbar.Children.Add(_pauseBtn);
-        connToolbar.Children.Add(_closeAllBtn);
+        connToolbar.Children.Add(_actionAllBtn);
+
+        topStack.Children.Add(connToolbar);
+        topStack.Children.Add(_connSummaryLabel);
+        Grid.SetRow(topStack, 1);
+        Root.Children.Add(topStack);
 
         _connListPanel = new StackPanel
         {
@@ -156,134 +174,26 @@ public sealed class ConnectionsPageView
             Padding = new Thickness(18, 0, 18, 24),
         };
         var connScroll = NetoUiFactory.CreateCenteredScrollViewer(_connListPanel);
-        Grid.SetRow(connScroll, 1);
-        _activePane.Children.Add(connToolbar);
-        _activePane.Children.Add(connScroll);
-
-        _rulesPane = new Grid { RowSpacing = 8, Visibility = Visibility.Collapsed };
-        _rulesPane.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        _rulesPane.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-
-        var rulesTopStack = new StackPanel
-        {
-            MaxWidth = 860,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            Spacing = 8,
-            Padding = new Thickness(18, 6, 18, 0),
-        };
-
-        var ruleFilterRow = new Grid { ColumnSpacing = 8 };
-        ruleFilterRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        ruleFilterRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        ruleFilterRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        ruleFilterRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        _ruleSearchBox = new TextBox { PlaceholderText = "筛选规则类型、匹配内容或目标策略" };
-        _ruleSearchBox.TextChanged += async (_, _) => await RefreshRulesAsync();
-        _ruleCountLabel = new TextBlock
-        {
-            FontSize = 12,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(4, 0, 4, 0),
-            Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
-        };
-        _toggleTesterBtn = new Button { Content = "匹配测试" };
-        _toggleTesterBtn.Click += (_, _) =>
-        {
-            var show = _testerCard.Visibility != Visibility.Visible;
-            _testerCard.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-            NetoUiFactory.ApplyPrimaryButton(_toggleTesterBtn, show);
-        };
-        var refreshRulesBtn = new Button { Content = "刷新" };
-        refreshRulesBtn.Click += async (_, _) => await RefreshRulesAsync();
-        Grid.SetColumn(_ruleCountLabel, 1);
-        Grid.SetColumn(_toggleTesterBtn, 2);
-        Grid.SetColumn(refreshRulesBtn, 3);
-        ruleFilterRow.Children.Add(_ruleSearchBox);
-        ruleFilterRow.Children.Add(_ruleCountLabel);
-        ruleFilterRow.Children.Add(_toggleTesterBtn);
-        ruleFilterRow.Children.Add(refreshRulesBtn);
-        rulesTopStack.Children.Add(ruleFilterRow);
-
-        var testerStack = new StackPanel { Spacing = 8 };
-        var testerRow = new Grid { ColumnSpacing = 8 };
-        testerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        testerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
-        testerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        _routeTargetBox = new TextBox { PlaceholderText = "输入目标域名或 IP（如 www.google.com 或 223.5.5.5:53）" };
-        _routeNetCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
-        _routeNetCombo.Items.Add("TCP");
-        _routeNetCombo.Items.Add("UDP");
-        _routeNetCombo.SelectedIndex = 0;
-        var runTestBtn = new Button { Content = "测试" };
-        NetoUiFactory.ApplyPrimaryButton(runTestBtn, true);
-        runTestBtn.Click += async (_, _) => await RunRouteTestAsync(runTestBtn);
-        Grid.SetColumn(_routeNetCombo, 1);
-        Grid.SetColumn(runTestBtn, 2);
-        testerRow.Children.Add(_routeTargetBox);
-        testerRow.Children.Add(_routeNetCombo);
-        testerRow.Children.Add(runTestBtn);
-        _routeResultText = new TextBlock
-        {
-            FontSize = 12,
-            FontFamily = new FontFamily("Consolas"),
-            Visibility = Visibility.Collapsed,
-            TextWrapping = TextWrapping.Wrap,
-        };
-        testerStack.Children.Add(testerRow);
-        testerStack.Children.Add(_routeResultText);
-        _testerCard = NetoUiFactory.CreateCard(testerStack, new Thickness(14, 10, 14, 10));
-        _testerCard.Visibility = Visibility.Collapsed;
-        rulesTopStack.Children.Add(_testerCard);
-
-        _rulesListPanel = new StackPanel
-        {
-            MaxWidth = 860,
-            Spacing = 4,
-            Padding = new Thickness(18, 0, 18, 24),
-        };
-        var rulesScroll = NetoUiFactory.CreateCenteredScrollViewer(_rulesListPanel);
-        Grid.SetRow(rulesScroll, 1);
-        _rulesPane.Children.Add(rulesTopStack);
-        _rulesPane.Children.Add(rulesScroll);
-
-        Grid.SetRow(_activePane, 1);
-        Grid.SetRow(_rulesPane, 1);
-        Root.Children.Add(_activePane);
-        Root.Children.Add(_rulesPane);
+        Grid.SetRow(connScroll, 2);
+        Root.Children.Add(connScroll);
 
         SwitchSubTab("active");
     }
 
     public void SwitchSubTab(string subTab)
     {
-        _subTab = subTab == "rules" ? "rules" : "active";
+        _subTab = subTab == "closed" ? "closed" : "active";
         NetoUiFactory.ApplyPrimaryButton(_tabActiveBtn, _subTab == "active");
-        NetoUiFactory.ApplyPrimaryButton(_tabRulesBtn, _subTab == "rules");
-        _activePane.Visibility = _subTab == "active" ? Visibility.Visible : Visibility.Collapsed;
-        _rulesPane.Visibility = _subTab == "rules" ? Visibility.Visible : Visibility.Collapsed;
+        NetoUiFactory.ApplyPrimaryButton(_tabClosedBtn, _subTab == "closed");
+        _actionAllBtn.Content = _subTab == "closed" ? "清空记录" : "断开全部";
     }
 
     public void ApplySnapshot(NetoSnapshot snap)
     {
-        var ruleAccountSig = $"{snap.ActiveProfileId}:{snap.RuleCount}:{snap.Settings.CustomRouteYaml.Length}";
-        if (_lastRuleAccountSig != ruleAccountSig)
-        {
-            _lastRuleAccountSig = ruleAccountSig;
-            _rulesLoadedOnce = false;
-            if (Root.Visibility == Visibility.Visible && _subTab == "rules")
-            {
-                _ = RefreshRulesAsync();
-            }
-        }
-
         if (Root.Visibility != Visibility.Visible) return;
-        if (_subTab == "active" && !_paused)
+        if (!_paused)
         {
             _ = RefreshConnectionsAsync();
-        }
-        else if (_subTab == "rules" && !_rulesLoadedOnce)
-        {
-            _ = RefreshRulesAsync();
         }
     }
 
@@ -294,7 +204,9 @@ public sealed class ConnectionsPageView
         try
         {
             var snap = await _client.GetConnectionsAsync();
-            var filtered = snap.Active.Where(c =>
+            var isClosed = _subTab == "closed";
+            var source = isClosed ? snap.Closed : snap.Active;
+            var matching = source.Where(c =>
             {
                 if (_connNetFilter != "all" && !string.Equals(c.Network, _connNetFilter, StringComparison.OrdinalIgnoreCase))
                     return false;
@@ -306,16 +218,36 @@ public sealed class ConnectionsPageView
                     if (!hit) return false;
                 }
                 return true;
-            }).OrderByDescending(c => c.StartedAtMs).ToList();
+            });
 
-            _connSummaryLabel.Text = $"活跃 {snap.Active.Count} · ↑ {NetoFormat.FormatBytes(snap.TotalUploadBytes)} ↓ {NetoFormat.FormatBytes(snap.TotalDownloadBytes)}";
-            _closeAllBtn.IsEnabled = snap.Active.Count > 0;
+            var filtered = (_sortIndex switch
+            {
+                1 => matching.OrderByDescending(c => c.DownloadSpeedBps).ThenByDescending(c => c.DownloadBytes),
+                2 => matching.OrderByDescending(c => c.UploadSpeedBps).ThenByDescending(c => c.UploadBytes),
+                3 => matching.OrderByDescending(c => c.UploadBytes + c.DownloadBytes),
+                4 => matching.OrderBy(c => c.Host, StringComparer.OrdinalIgnoreCase),
+                _ => isClosed
+                    ? matching.OrderByDescending(c => c.ClosedAtMs).ThenByDescending(c => c.Id)
+                    : matching.OrderByDescending(c => c.StartedAtMs).ThenByDescending(c => c.Id),
+            }).ToList();
+
+            _tabActiveBtn.Content = snap.Active.Count > 0 ? $"活跃会话 ({snap.Active.Count})" : "活跃会话";
+            _tabClosedBtn.Content = snap.Closed.Count > 0 ? $"已关闭 ({snap.Closed.Count})" : "已关闭";
+            _connSummaryLabel.Text = isClosed
+                ? $"已关闭 {snap.Closed.Count} 条 · 累计 ↑ {NetoFormat.FormatBytes(snap.TotalUploadBytes)} ↓ {NetoFormat.FormatBytes(snap.TotalDownloadBytes)}"
+                : $"活跃 {snap.Active.Count} · ↑ {NetoFormat.FormatSpeed(snap.TotalUploadSpeedBps)} ↓ {NetoFormat.FormatSpeed(snap.TotalDownloadSpeedBps)} · 累计 ↑ {NetoFormat.FormatBytes(snap.TotalUploadBytes)} ↓ {NetoFormat.FormatBytes(snap.TotalDownloadBytes)}";
+            _actionAllBtn.IsEnabled = isClosed ? snap.Closed.Count > 0 : snap.Active.Count > 0;
 
             var nowMs = NetoFormat.NowUnixMs();
             var sig = string.Join("|",
+                _subTab,
                 _connNetFilter,
                 _connFilter,
-                string.Join(";", filtered.Select(c => $"{c.Id}:{c.UploadBytes / 1024}:{c.DownloadBytes / 1024}:{(nowMs - Math.Min(nowMs, c.StartedAtMs)) / 1000}")));
+                _sortIndex,
+                snap.Active.Count,
+                snap.Closed.Count,
+                string.Join(";", filtered.Take(200).Select(c =>
+                    $"{c.Id}:{c.UploadBytes / 1024}:{c.DownloadBytes / 1024}:{c.UploadSpeedBps / 512}:{c.DownloadSpeedBps / 512}:{(isClosed ? c.ClosedAtMs : (nowMs - Math.Min(nowMs, c.StartedAtMs)) / 1000)}")));
             if (!forceRender && _lastConnSig == sig) return;
             _lastConnSig = sig;
 
@@ -324,7 +256,7 @@ public sealed class ConnectionsPageView
             {
                 _connListPanel.Children.Add(NetoUiFactory.CreateCard(new TextBlock
                 {
-                    Text = snap.Active.Count == 0 ? "暂无活跃会话" : "无匹配会话",
+                    Text = source.Count == 0 ? (isClosed ? "暂无已关闭会话" : "暂无活跃会话") : "无匹配会话",
                     Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
                 }));
                 return;
@@ -334,8 +266,14 @@ public sealed class ConnectionsPageView
             {
                 var row = new Grid { ColumnSpacing = 10 };
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                if (!isClosed)
+                {
+                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                }
+
+                var contentGrid = new Grid { ColumnSpacing = 10 };
+                contentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                contentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
                 var left = new StackPanel { Spacing = 4 };
                 left.Children.Add(new TextBlock
@@ -356,44 +294,67 @@ public sealed class ConnectionsPageView
                 }
                 left.Children.Add(badges);
 
-                var ageSec = nowMs > item.StartedAtMs ? (nowMs - item.StartedAtMs) / 1000UL : 0UL;
+                var durationMs = isClosed
+                    ? (item.ClosedAtMs > item.StartedAtMs ? item.ClosedAtMs - item.StartedAtMs : 0UL)
+                    : (nowMs > item.StartedAtMs ? nowMs - item.StartedAtMs : 0UL);
                 var stats = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
                 stats.Children.Add(new TextBlock
                 {
-                    Text = $"↑ {NetoFormat.FormatBytes(item.UploadBytes)} · ↓ {NetoFormat.FormatBytes(item.DownloadBytes)}",
+                    Text = isClosed
+                        ? $"↑ {NetoFormat.FormatBytes(item.UploadBytes)} · ↓ {NetoFormat.FormatBytes(item.DownloadBytes)}"
+                        : $"↑ {NetoFormat.FormatSpeed(item.UploadSpeedBps)} · ↓ {NetoFormat.FormatSpeed(item.DownloadSpeedBps)}",
                     FontSize = 12,
                     FontFamily = new FontFamily("Consolas"),
                     HorizontalAlignment = HorizontalAlignment.Right,
                 });
                 stats.Children.Add(new TextBlock
                 {
-                    Text = $"{ageSec}s",
+                    Text = isClosed
+                        ? $"{NetoFormat.FormatDurationMs(durationMs)} · {NetoFormat.FormatLogTimestamp(item.ClosedAtMs)}"
+                        : $"↑ {NetoFormat.FormatBytes(item.UploadBytes)} ↓ {NetoFormat.FormatBytes(item.DownloadBytes)} · {NetoFormat.FormatDurationMs(durationMs)}",
                     FontSize = 11,
                     FontFamily = new FontFamily("Consolas"),
                     HorizontalAlignment = HorizontalAlignment.Right,
                     Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
                 });
 
-                var cid = item.Id;
-                var closeBtn = new Button
-                {
-                    Content = "断开",
-                    Padding = new Thickness(10, 4, 10, 4),
-                    VerticalAlignment = VerticalAlignment.Center,
-                };
-                closeBtn.Click += async (_, _) =>
-                {
-                    await _client.CloseConnectionAsync(cid);
-                    _lastConnSig = "";
-                    await RefreshConnectionsAsync(forceRender: true);
-                };
-
                 Grid.SetColumn(stats, 1);
-                Grid.SetColumn(closeBtn, 2);
-                row.Children.Add(left);
-                row.Children.Add(stats);
-                row.Children.Add(closeBtn);
-                _connListPanel.Children.Add(NetoUiFactory.CreateCard(row, new Thickness(12, 8, 12, 8)));
+                contentGrid.Children.Add(left);
+                contentGrid.Children.Add(stats);
+
+                var itemSnapshot = item;
+                var openDetailBtn = new Button
+                {
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                    Background = new SolidColorBrush(Colors.Transparent),
+                    BorderThickness = new Thickness(0),
+                    Padding = new Thickness(12, 8, 12, 8),
+                    Content = contentGrid,
+                };
+                openDetailBtn.Click += async (_, _) => await ShowConnectionDetailDialogAsync(itemSnapshot, isClosed);
+                row.Children.Add(openDetailBtn);
+
+                if (!isClosed)
+                {
+                    var cid = item.Id;
+                    var closeBtn = new Button
+                    {
+                        Content = "断开",
+                        Padding = new Thickness(10, 4, 10, 4),
+                        Margin = new Thickness(0, 0, 10, 0),
+                        VerticalAlignment = VerticalAlignment.Center,
+                    };
+                    closeBtn.Click += async (_, _) =>
+                    {
+                        await _client.CloseConnectionAsync(cid);
+                        _lastConnSig = "";
+                        await RefreshConnectionsAsync(forceRender: true);
+                    };
+                    Grid.SetColumn(closeBtn, 1);
+                    row.Children.Add(closeBtn);
+                }
+                _connListPanel.Children.Add(NetoUiFactory.CreateCard(row, new Thickness(0)));
             }
         }
         finally
@@ -402,91 +363,83 @@ public sealed class ConnectionsPageView
         }
     }
 
-    public async Task RefreshRulesAsync()
+    private async Task ShowConnectionDetailDialogAsync(NetoActiveConnection item, bool isClosed)
     {
-        if (_fetchingRules) return;
-        _fetchingRules = true;
+        if (_dialogOpen || Root.XamlRoot == null) return;
+        _dialogOpen = true;
         try
         {
-            var filter = (_ruleSearchBox.Text ?? "").Trim();
-            var res = await _client.GetRulesAsync(filter, 300);
-            _rulesLoadedOnce = true;
-            _ruleCountLabel.Text = string.IsNullOrEmpty(filter)
-                ? $"共 {res.Total} 条"
-                : $"{res.Items.Count} / {res.Total}";
-
-            _rulesListPanel.Children.Clear();
-            if (res.Items.Count == 0)
+            var nowMs = NetoFormat.NowUnixMs();
+            var durationMs = isClosed
+                ? (item.ClosedAtMs > item.StartedAtMs ? item.ClosedAtMs - item.StartedAtMs : 0UL)
+                : (nowMs > item.StartedAtMs ? nowMs - item.StartedAtMs : 0UL);
+            var body = new StackPanel { Spacing = 8, MinWidth = 360 };
+            AddDetailRow(body, "目标主机", item.Host);
+            AddDetailRow(body, "传输协议", item.Network.ToUpperInvariant());
+            AddDetailRow(body, "出站策略", string.IsNullOrWhiteSpace(item.Outbound) ? "-" : item.Outbound);
+            AddDetailRow(body, "命中规则", string.IsNullOrWhiteSpace(item.Rule) ? "-" : item.Rule);
+            AddDetailRow(body, "会话状态", isClosed ? "已关闭" : "活跃");
+            if (!isClosed)
             {
-                _rulesListPanel.Children.Add(NetoUiFactory.CreateCard(new TextBlock
-                {
-                    Text = res.Total == 0 ? "暂无分流规则" : "无匹配规则",
-                    Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
-                }));
-                return;
+                AddDetailRow(body, "实时速率", $"↑ {NetoFormat.FormatSpeed(item.UploadSpeedBps)} · ↓ {NetoFormat.FormatSpeed(item.DownloadSpeedBps)}");
+            }
+            AddDetailRow(body, "累计流量", $"↑ {NetoFormat.FormatBytes(item.UploadBytes)} · ↓ {NetoFormat.FormatBytes(item.DownloadBytes)}");
+            AddDetailRow(body, "建立时间", NetoFormat.FormatLogTimestamp(item.StartedAtMs));
+            AddDetailRow(body, "持续时长", NetoFormat.FormatDurationMs(durationMs));
+            if (isClosed)
+            {
+                AddDetailRow(body, "关闭时间", NetoFormat.FormatLogTimestamp(item.ClosedAtMs));
             }
 
-            foreach (var r in res.Items)
+            var dialog = new ContentDialog
             {
-                var row = new Grid { ColumnSpacing = 8 };
-                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-                var typeBadge = NetoUiFactory.CreateTagBadge(r.RuleType);
-                var payloadText = new TextBlock
-                {
-                    Text = string.IsNullOrEmpty(r.Payload) ? "全匹配" : r.Payload,
-                    FontFamily = new FontFamily("Consolas"),
-                    FontSize = 12,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                };
-                var targetTint = r.Target.ToUpperInvariant() switch
-                {
-                    "DIRECT" => Color.FromArgb(255, 42, 168, 118),
-                    "REJECT" => Color.FromArgb(255, 216, 82, 76),
-                    _ => Color.FromArgb(255, 56, 132, 235),
-                };
-                var targetBadge = NetoUiFactory.CreateTagBadge(r.Target, targetTint);
-
-                Grid.SetColumn(payloadText, 1);
-                Grid.SetColumn(targetBadge, 2);
-                row.Children.Add(typeBadge);
-                row.Children.Add(payloadText);
-                row.Children.Add(targetBadge);
-                _rulesListPanel.Children.Add(NetoUiFactory.CreateCard(row, new Thickness(10, 6, 10, 6)));
+                XamlRoot = Root.XamlRoot,
+                Title = "会话详情",
+                Content = body,
+                PrimaryButtonText = "复制主机",
+                SecondaryButtonText = isClosed ? "" : "断开连接",
+                CloseButtonText = "关闭",
+                DefaultButton = ContentDialogButton.Close,
+            };
+            var res = await dialog.ShowAsync();
+            if (res == ContentDialogResult.Primary)
+            {
+                NetoWindowHelper.SetClipboardText(item.Host);
+            }
+            else if (res == ContentDialogResult.Secondary && !isClosed)
+            {
+                await _client.CloseConnectionAsync(item.Id);
+                _lastConnSig = "";
+                await RefreshConnectionsAsync(forceRender: true);
             }
         }
         finally
         {
-            _fetchingRules = false;
+            _dialogOpen = false;
         }
     }
 
-    private async Task RunRouteTestAsync(Button triggerBtn)
+    private static void AddDetailRow(StackPanel host, string label, string value)
     {
-        var target = (_routeTargetBox.Text ?? "").Trim();
-        if (string.IsNullOrEmpty(target)) return;
-        var net = _routeNetCombo.SelectedIndex == 1 ? "udp" : "tcp";
-        triggerBtn.IsEnabled = false;
-        try
+        var row = new Grid { ColumnSpacing = 12 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(84) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.Children.Add(new TextBlock
         {
-            var res = await _client.TestRouteAsync(target, net);
-            var outbound = string.IsNullOrEmpty(res.Outbound) ? res.Decision : $"{res.Decision} ({res.Outbound})";
-            _routeResultText.Text = $"{res.Target} [{res.Network.ToUpperInvariant()}] -> {outbound}  |  {res.MatchedRule}";
-            _routeResultText.Foreground = NetoUiFactory.BrushResource("TextFillColorPrimaryBrush", Colors.White);
-            _routeResultText.Visibility = Visibility.Visible;
-        }
-        catch (Exception ex)
+            Text = label,
+            FontSize = 12,
+            Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+        });
+        var valBlock = new TextBlock
         {
-            _routeResultText.Text = ex.Message;
-            _routeResultText.Foreground = new SolidColorBrush(Color.FromArgb(255, 216, 82, 76));
-            _routeResultText.Visibility = Visibility.Visible;
-        }
-        finally
-        {
-            triggerBtn.IsEnabled = true;
-        }
+            Text = value,
+            FontSize = 12,
+            FontFamily = new FontFamily("Consolas"),
+            TextWrapping = TextWrapping.Wrap,
+            IsTextSelectionEnabled = true,
+        };
+        Grid.SetColumn(valBlock, 1);
+        row.Children.Add(valBlock);
+        host.Children.Add(row);
     }
 }

@@ -3,13 +3,13 @@ pub mod format;
 #[cfg(target_os = "linux")]
 pub mod connections_view;
 #[cfg(target_os = "linux")]
-pub mod connect_view;
-#[cfg(target_os = "linux")]
-pub mod dashboard_view;
+pub mod home_view;
 #[cfg(target_os = "linux")]
 pub mod nodes_view;
 #[cfg(target_os = "linux")]
 pub mod profiles_view;
+#[cfg(target_os = "linux")]
+pub mod rules_view;
 #[cfg(target_os = "linux")]
 pub mod settings_view;
 

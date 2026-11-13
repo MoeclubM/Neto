@@ -3,7 +3,7 @@ use aerion::{RouteNetwork, protocol::ProxyTarget};
 use anyhow::{Context, Result, bail, ensure};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
@@ -27,14 +27,26 @@ pub struct ActiveConnectionEntry {
     pub outbound: String,
     pub upload_bytes: u64,
     pub download_bytes: u64,
+    #[serde(default)]
+    pub upload_speed_bps: u64,
+    #[serde(default)]
+    pub download_speed_bps: u64,
     pub started_at_ms: u64,
+    #[serde(default)]
+    pub closed_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConnectionsSnapshot {
     pub active: Vec<ActiveConnectionEntry>,
+    #[serde(default)]
+    pub closed: Vec<ActiveConnectionEntry>,
     pub total_upload_bytes: u64,
     pub total_download_bytes: u64,
+    #[serde(default)]
+    pub total_upload_speed_bps: u64,
+    #[serde(default)]
+    pub total_download_speed_bps: u64,
 }
 
 struct TrackedEntry {
@@ -43,15 +55,60 @@ struct TrackedEntry {
     meta: Mutex<(String, String, String)>,
     upload_bytes: AtomicU64,
     download_bytes: AtomicU64,
+    rate: Mutex<[u64; 5]>,
     started_at_ms: u64,
     cancel_tx: watch::Sender<bool>,
 }
+
+const CLOSED_LIMIT: usize = 300;
 
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 static SESSION_UPLOAD_BYTES: AtomicU64 = AtomicU64::new(0);
 static SESSION_DOWNLOAD_BYTES: AtomicU64 = AtomicU64::new(0);
 static REGISTRY: Lazy<Mutex<BTreeMap<u64, Arc<TrackedEntry>>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
+static CLOSED: Lazy<Mutex<VecDeque<ActiveConnectionEntry>>> =
+    Lazy::new(|| Mutex::new(VecDeque::with_capacity(CLOSED_LIMIT)));
+
+impl TrackedEntry {
+    fn view(&self, closed_at_ms: u64) -> ActiveConnectionEntry {
+        let (host, rule, outbound) = self.meta.lock().map(|g| g.clone()).unwrap_or_default();
+        let upload_bytes = self.upload_bytes.load(Ordering::Relaxed);
+        let download_bytes = self.download_bytes.load(Ordering::Relaxed);
+        let (upload_speed_bps, download_speed_bps) = if closed_at_ms == 0 {
+            self.sample_rate(upload_bytes, download_bytes)
+        } else {
+            (0, 0)
+        };
+        ActiveConnectionEntry {
+            id: self.id,
+            host,
+            network: self.network.to_string(),
+            rule,
+            outbound,
+            upload_bytes,
+            download_bytes,
+            upload_speed_bps,
+            download_speed_bps,
+            started_at_ms: self.started_at_ms,
+            closed_at_ms,
+        }
+    }
+
+    fn sample_rate(&self, up: u64, down: u64) -> (u64, u64) {
+        let Ok(mut rate) = self.rate.lock() else {
+            return (0, 0);
+        };
+        let now = now_ms();
+        let elapsed = now.saturating_sub(rate[0]);
+        if elapsed >= 500 {
+            rate[3] = up.saturating_sub(rate[1]) * 1000 / elapsed;
+            rate[4] = down.saturating_sub(rate[2]) * 1000 / elapsed;
+            *rate = [now, up, down, rate[3], rate[4]];
+        }
+        (rate[3], rate[4])
+    }
+}
 
 struct ConnectionGuard {
     id: u64,
@@ -62,6 +119,12 @@ impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         if let Ok(mut map) = REGISTRY.lock() {
             map.remove(&self.id);
+        }
+        if let Ok(mut closed) = CLOSED.lock() {
+            if closed.len() >= CLOSED_LIMIT {
+                closed.pop_front();
+            }
+            closed.push_back(self.entry.view(now_ms()));
         }
     }
 }
@@ -74,13 +137,15 @@ fn register_connection(
 ) -> (ConnectionGuard, watch::Receiver<bool>) {
     let id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
     let (cancel_tx, cancel_rx) = watch::channel(false);
+    let started_at_ms = now_ms();
     let entry = Arc::new(TrackedEntry {
         id,
         network,
         meta: Mutex::new((host, rule, outbound)),
         upload_bytes: AtomicU64::new(0),
         download_bytes: AtomicU64::new(0),
-        started_at_ms: now_ms(),
+        rate: Mutex::new([started_at_ms, 0, 0, 0, 0]),
+        started_at_ms,
         cancel_tx,
     });
     REGISTRY
@@ -100,8 +165,15 @@ pub fn clear_connections() {
     for entry in entries {
         let _ = entry.cancel_tx.send(true);
     }
+    clear_closed_connections();
     SESSION_UPLOAD_BYTES.store(0, Ordering::Relaxed);
     SESSION_DOWNLOAD_BYTES.store(0, Ordering::Relaxed);
+}
+
+pub fn clear_closed_connections() {
+    if let Ok(mut closed) = CLOSED.lock() {
+        closed.clear();
+    }
 }
 
 pub fn close_connection(id: u64) -> bool {
@@ -149,26 +221,22 @@ pub fn snapshot_connections() -> ConnectionsSnapshot {
         .values()
         .cloned()
         .collect();
-    let mut active = Vec::with_capacity(entries.len());
-    for item in entries {
-        let (host, rule, outbound) = item.meta.lock().map(|g| g.clone()).unwrap_or_default();
-        active.push(ActiveConnectionEntry {
-            id: item.id,
-            host,
-            network: item.network.to_string(),
-            rule,
-            outbound,
-            upload_bytes: item.upload_bytes.load(Ordering::Relaxed),
-            download_bytes: item.download_bytes.load(Ordering::Relaxed),
-            started_at_ms: item.started_at_ms,
-        });
-    }
+    let mut active: Vec<_> = entries.iter().map(|item| item.view(0)).collect();
     active.sort_by(|a, b| b.id.cmp(&a.id));
+    let total_upload_speed_bps = active.iter().map(|item| item.upload_speed_bps).sum();
+    let total_download_speed_bps = active.iter().map(|item| item.download_speed_bps).sum();
+    let closed = CLOSED
+        .lock()
+        .map(|c| c.iter().rev().cloned().collect())
+        .unwrap_or_default();
     let (total_upload_bytes, total_download_bytes) = session_traffic_totals();
     ConnectionsSnapshot {
         active,
+        closed,
         total_upload_bytes,
         total_download_bytes,
+        total_upload_speed_bps,
+        total_download_speed_bps,
     }
 }
 

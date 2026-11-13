@@ -21,7 +21,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.json.JSONArray
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Button
@@ -49,10 +48,6 @@ fun NetoSettingsPane(
 ) {
     val settings = snapshot.settings
     var subpage by rememberSaveable { mutableStateOf("root") }
-    var showConnections by rememberSaveable { mutableStateOf(false) }
-    var showRulesDialog by rememberSaveable { mutableStateOf(false) }
-    val checkingConnectivity by client.checkingConnectivity.collectAsStateWithLifecycle()
-    var customRouteDraft by rememberSaveable(settings.customRouteYaml) { mutableStateOf(settings.customRouteYaml) }
 
     BackHandler(enabled = subpage != "root") {
         subpage = "root"
@@ -77,7 +72,7 @@ fun NetoSettingsPane(
             overscrollEffect = null,
         ) {
             item(key = "hdr") {
-                NetoSubpageHeader(title = "DNS 与 TUN 参数", onBack = { subpage = "root" })
+                NetoSubpageHeader(title = "DNS 与网络参数", onBack = { subpage = "root" })
             }
             item(key = "dns-card") {
                 NetoPreferenceCard {
@@ -124,97 +119,6 @@ fun NetoSettingsPane(
                         value = settings.directDns,
                         onConfirm = { client.updateSettings(JSONObject().put("direct_dns", it), restartIfConnected = true) },
                     )
-                }
-            }
-        }
-
-        "custom_route" -> LazyColumn(
-            modifier = modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp),
-            overscrollEffect = null,
-        ) {
-            item(key = "hdr") {
-                NetoSubpageHeader(title = "分流规则覆写", onBack = { subpage = "root" })
-            }
-            item(key = "route-card") {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp)
-                        .padding(bottom = 10.dp),
-                    insideMargin = PaddingValues(14.dp),
-                ) {
-                    TextField(
-                        value = customRouteDraft,
-                        onValueChange = { customRouteDraft = it },
-                        label = "留空则使用当前订阅规则（共 ${snapshot.ruleCount} 条）",
-                        useLabelAsPlaceholder = true,
-                        minLines = 10,
-                        maxLines = 20,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        Button(
-                            onClick = {
-                                customRouteDraft = ""
-                                client.updateSettings(JSONObject().put("custom_route_yaml", ""), restartIfConnected = true)
-                            },
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text("恢复默认")
-                        }
-                        Button(
-                            onClick = {
-                                client.updateSettings(JSONObject().put("custom_route_yaml", customRouteDraft), restartIfConnected = true)
-                            },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColorsPrimary(),
-                        ) {
-                            Text("保存规则")
-                        }
-                    }
-                }
-            }
-        }
-
-        "diagnostics" -> {
-            val checkRes = snapshot.lastNetworkCheck
-            val checkSummary = when {
-                checkingConnectivity -> "检测中..."
-                checkRes == null -> "未检测"
-                else -> {
-                    val ip = listOfNotNull(checkRes.exitIp, checkRes.exitCountry, checkRes.exitIsp).joinToString(" · ")
-                    val delays = checkRes.targets.joinToString(" · ") { t -> t.latencyMs?.let { "${t.name} ${it}ms" } ?: "${t.name} 超时" }
-                    listOf(ip, delays).filter { it.isNotBlank() }.joinToString(" | ")
-                }
-            }
-            LazyColumn(
-                modifier = modifier.fillMaxSize(),
-                contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp),
-                overscrollEffect = null,
-            ) {
-                item(key = "hdr") {
-                    NetoSubpageHeader(title = "会话与路由诊断", onBack = { subpage = "root" })
-                }
-                item(key = "diag-card") {
-                    NetoPreferenceCard {
-                        ArrowPreference(
-                            title = "活跃会话",
-                            summary = "并发 ${snapshot.telemetry.activeSessions} · ↑ ${formatNetoBytes(snapshot.telemetry.uploadBytes)} ↓ ${formatNetoBytes(snapshot.telemetry.downloadBytes)}",
-                            onClick = { showConnections = true },
-                        )
-                        ArrowPreference(
-                            title = "分流规则与匹配测试",
-                            summary = "共 ${snapshot.ruleCount} 条规则",
-                            onClick = { showRulesDialog = true },
-                        )
-                        ArrowPreference(
-                            title = "出口连通检测",
-                            summary = checkSummary,
-                            onClick = client::checkConnectivity,
-                        )
-                    }
                 }
             }
         }
@@ -286,19 +190,9 @@ fun NetoSettingsPane(
                 SmallTitle("高级与诊断")
                 NetoPreferenceCard {
                     ArrowPreference(
-                        title = "DNS 与 TUN 参数",
+                        title = "DNS 与网络参数",
                         summary = "${dnsModes[dnsIdx].second} · IPv6 ${if (settings.ipv6Enabled) "开" else "关"}",
                         onClick = { subpage = "dns_tun" },
-                    )
-                    ArrowPreference(
-                        title = "分流规则覆写",
-                        summary = if (settings.customRouteYaml.isBlank()) "跟随订阅规则（共 ${snapshot.ruleCount} 条）" else "已启用自定义规则",
-                        onClick = { subpage = "custom_route" },
-                    )
-                    ArrowPreference(
-                        title = "会话与路由诊断",
-                        summary = "并发 ${snapshot.telemetry.activeSessions} · 规则匹配与出口检测",
-                        onClick = { subpage = "diagnostics" },
                     )
                     ArrowPreference(
                         title = "运行日志",
@@ -317,20 +211,6 @@ fun NetoSettingsPane(
                 }
             }
         }
-    }
-
-    if (showConnections) {
-        NetoActiveConnectionsDialog(
-            client = client,
-            onDismiss = { showConnections = false },
-        )
-    }
-
-    if (showRulesDialog) {
-        NetoRulesAndRouteTestDialog(
-            client = client,
-            onDismiss = { showRulesDialog = false },
-        )
     }
 }
 

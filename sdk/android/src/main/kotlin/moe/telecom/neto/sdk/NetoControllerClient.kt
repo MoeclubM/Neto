@@ -183,26 +183,35 @@ class NetoControllerClient(
     suspend fun fetchConnections(): NetoConnectionsSnapshot = withContext(Dispatchers.IO) {
         runCatching {
             val obj = NetoBridge.call("list_connections").getJSONObject("result")
-            val arr = obj.optJSONArray("active")
-            val active = if (arr == null) emptyList() else (0 until arr.length()).mapNotNull { i ->
-                val c = arr.optJSONObject(i) ?: return@mapNotNull null
-                NetoActiveConnection(
-                    id = c.optLong("id", 0L),
-                    host = c.optString("host", ""),
-                    network = c.optString("network", "tcp"),
-                    rule = c.optString("rule", ""),
-                    outbound = c.optString("outbound", ""),
-                    uploadBytes = c.optLong("upload_bytes", 0L),
-                    downloadBytes = c.optLong("download_bytes", 0L),
-                    startedAtMs = c.optLong("started_at_ms", 0L),
-                )
-            }
             NetoConnectionsSnapshot(
-                active = active,
+                active = parseConnectionsArray(obj.optJSONArray("active")),
+                closed = parseConnectionsArray(obj.optJSONArray("closed")),
                 totalUploadBytes = obj.optLong("total_upload_bytes", 0L),
                 totalDownloadBytes = obj.optLong("total_download_bytes", 0L),
+                totalUploadSpeedBps = obj.optLong("total_upload_speed_bps", 0L),
+                totalDownloadSpeedBps = obj.optLong("total_download_speed_bps", 0L),
             )
         }.getOrDefault(NetoConnectionsSnapshot())
+    }
+
+    private fun parseConnectionsArray(arr: JSONArray?): List<NetoActiveConnection> {
+        if (arr == null) return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            val c = arr.optJSONObject(i) ?: return@mapNotNull null
+            NetoActiveConnection(
+                id = c.optLong("id", 0L),
+                host = c.optString("host", ""),
+                network = c.optString("network", "tcp"),
+                rule = c.optString("rule", ""),
+                outbound = c.optString("outbound", ""),
+                uploadBytes = c.optLong("upload_bytes", 0L),
+                downloadBytes = c.optLong("download_bytes", 0L),
+                uploadSpeedBps = c.optLong("upload_speed_bps", 0L),
+                downloadSpeedBps = c.optLong("download_speed_bps", 0L),
+                startedAtMs = c.optLong("started_at_ms", 0L),
+                closedAtMs = c.optLong("closed_at_ms", 0L),
+            )
+        }
     }
 
     fun closeConnection(id: Long) {
@@ -215,6 +224,34 @@ class NetoControllerClient(
         scope.launch(Dispatchers.IO) {
             runCatching { NetoBridge.call("close_all_connections") }
             runCatching { refreshSnapshotNow() }
+        }
+    }
+
+    fun clearClosedConnections() {
+        scope.launch(Dispatchers.IO) {
+            runCatching { NetoBridge.call("clear_closed_connections") }
+        }
+    }
+
+    fun addCustomRule(rule: String, onResult: ((String?) -> Unit)? = null) {
+        val wasConnected = _snapshot.value.connection.connected
+        scope.launch {
+            _actionError.value = null
+            try {
+                val snap = withContext(Dispatchers.IO) {
+                    val env = NetoBridge.call("add_custom_rule", JSONObject().put("rule", rule))
+                    NetoSnapshot.fromJson(env.getJSONObject("result"))
+                }
+                _snapshot.value = snap
+                if (wasConnected) {
+                    NetoVpnService.start(appContext, appTitle)
+                }
+                onResult?.invoke(null)
+            } catch (err: Throwable) {
+                val msg = err.message ?: "添加规则失败"
+                _actionError.value = msg
+                onResult?.invoke(msg)
+            }
         }
     }
 
@@ -266,11 +303,28 @@ class NetoControllerClient(
         }
     }
 
-    fun updateSettings(patch: JSONObject, restartIfConnected: Boolean = false) {
+    fun updateSettings(
+        patch: JSONObject,
+        restartIfConnected: Boolean = false,
+        onResult: ((String?) -> Unit)? = null,
+    ) {
         val wasConnected = _snapshot.value.connection.connected
-        runCall("update_settings", patch) {
-            if (restartIfConnected && wasConnected) {
-                NetoVpnService.start(appContext, appTitle)
+        scope.launch {
+            _actionError.value = null
+            try {
+                val snap = withContext(Dispatchers.IO) {
+                    val env = NetoBridge.call("update_settings", patch)
+                    NetoSnapshot.fromJson(env.getJSONObject("result"))
+                }
+                _snapshot.value = snap
+                if (restartIfConnected && wasConnected) {
+                    NetoVpnService.start(appContext, appTitle)
+                }
+                onResult?.invoke(null)
+            } catch (err: Throwable) {
+                val msg = err.message ?: "保存配置失败"
+                _actionError.value = msg
+                onResult?.invoke(msg)
             }
         }
     }

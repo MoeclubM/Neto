@@ -21,9 +21,7 @@ pub struct SettingsView {
     direct_dns_row: adw::EntryRow,
     test_url_row: adw::EntryRow,
     bypass_row: adw::EntryRow,
-    route_buffer: gtk::TextBuffer,
     dns_entry_row: adw::ActionRow,
-    route_entry_row: adw::ActionRow,
     logs_entry_row: adw::ActionRow,
     log_level: Rc<RefCell<String>>,
     log_filter: Rc<RefCell<String>>,
@@ -85,12 +83,6 @@ impl SettingsView {
             .build();
         dns_entry_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
 
-        let route_entry_row = adw::ActionRow::builder()
-            .title("分流规则覆写")
-            .activatable(true)
-            .build();
-        route_entry_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
-
         let tools_entry_row = adw::ActionRow::builder()
             .title("系统代理与终端工具")
             .subtitle("代理绕过列表与终端环境变量")
@@ -105,7 +97,6 @@ impl SettingsView {
         logs_entry_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
 
         adv_group.add(&dns_entry_row);
-        adv_group.add(&route_entry_row);
         adv_group.add(&tools_entry_row);
         adv_group.add(&logs_entry_row);
 
@@ -147,34 +138,6 @@ impl SettingsView {
         dns_page.add(&dns_group);
         let dns_shell = build_subpage_shell("DNS 与 TUN 参数", &stack, &dns_page);
         stack.add_named(&dns_shell, Some("dns_tun"));
-
-        let route_page = adw::PreferencesPage::new();
-        let route_group = adw::PreferencesGroup::builder()
-            .title("自定义 YAML 规则（留空使用当前订阅规则）")
-            .build();
-        let route_view = gtk::TextView::builder()
-            .monospace(true)
-            .wrap_mode(gtk::WrapMode::None)
-            .build();
-        let route_buffer = route_view.buffer();
-        let route_scroll = gtk::ScrolledWindow::builder()
-            .min_content_height(260)
-            .child(&route_view)
-            .build();
-        route_scroll.add_css_class("card");
-        let route_btns = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        route_btns.set_halign(gtk::Align::End);
-        route_btns.set_margin_top(8);
-        let reset_route_btn = gtk::Button::with_label("恢复默认");
-        let save_route_btn = gtk::Button::with_label("保存规则");
-        save_route_btn.add_css_class("suggested-action");
-        route_btns.append(&reset_route_btn);
-        route_btns.append(&save_route_btn);
-        route_group.add(&route_scroll);
-        route_group.add(&route_btns);
-        route_page.add(&route_group);
-        let route_shell = build_subpage_shell("分流规则覆写", &stack, &route_page);
-        stack.add_named(&route_shell, Some("custom_route"));
 
         let tools_page = adw::PreferencesPage::new();
         let tools_group = adw::PreferencesGroup::builder().title("代理与环境").build();
@@ -240,7 +203,6 @@ impl SettingsView {
 
         for (row, target) in [
             (&dns_entry_row, "dns_tun"),
-            (&route_entry_row, "custom_route"),
             (&tools_entry_row, "tools"),
             (&logs_entry_row, "logs"),
         ] {
@@ -336,22 +298,6 @@ impl SettingsView {
             });
         }
         {
-            let ctrl = controller.clone();
-            let buf = route_buffer.clone();
-            save_route_btn.connect_clicked(move |_| {
-                let yaml = buf.text(&buf.start_iter(), &buf.end_iter(), false).to_string();
-                let _ = ctrl.update_settings(&json!({ "custom_route_yaml": yaml }));
-            });
-        }
-        {
-            let ctrl = controller.clone();
-            let buf = route_buffer.clone();
-            reset_route_btn.connect_clicked(move |_| {
-                buf.set_text("");
-                let _ = ctrl.update_settings(&json!({ "custom_route_yaml": "" }));
-            });
-        }
-        {
             let buf = logs_buffer.clone();
             clear_btn.connect_clicked(move |_| {
                 telemetry::clear_logs();
@@ -372,9 +318,7 @@ impl SettingsView {
             direct_dns_row,
             test_url_row,
             bypass_row,
-            route_buffer,
             dns_entry_row,
-            route_entry_row,
             logs_entry_row,
             log_level,
             log_filter,
@@ -404,18 +348,11 @@ impl SettingsView {
             self.direct_dns_row.set_text(&snap.settings.direct_dns);
             self.test_url_row.set_text(&snap.settings.node_test_url);
             self.bypass_row.set_text(&snap.settings.system_proxy_bypass);
-            self.route_buffer.set_text(&snap.settings.custom_route_yaml);
             self.initialized.set(true);
         }
         let ipv6_lbl = if snap.settings.ipv6_enabled { "IPv6 开" } else { "IPv6 关" };
         self.dns_entry_row
             .set_subtitle(&format!("MTU {} · {ipv6_lbl}", snap.settings.mtu));
-        if snap.settings.custom_route_yaml.trim().is_empty() {
-            self.route_entry_row
-                .set_subtitle(&format!("跟随订阅规则（{} 条）", snap.rule_count));
-        } else {
-            self.route_entry_row.set_subtitle("已启用自定义规则");
-        }
 
         let lvl = self.log_level.borrow().clone();
         let flt = self.log_filter.borrow().clone();

@@ -1,4 +1,7 @@
-use crate::dashboard::{DashboardWidgetItem, default_dashboard_widgets, normalize_dashboard_widgets};
+use crate::dashboard::{
+    DashboardWidgetItem, default_dashboard_widgets, deserialize_dashboard_widgets,
+    normalize_dashboard_widgets,
+};
 use crate::profile::ProfileRecord;
 use crate::telemetry::TelemetrySnapshot;
 use serde::{Deserialize, Serialize};
@@ -72,7 +75,10 @@ pub struct NetoSettings {
     pub theme_mode: String,
     #[serde(default = "default_language")]
     pub language: String,
-    #[serde(default = "default_dashboard_widgets")]
+    #[serde(
+        default = "default_dashboard_widgets",
+        deserialize_with = "deserialize_dashboard_widgets"
+    )]
     pub dashboard_widgets: Vec<DashboardWidgetItem>,
 }
 
@@ -187,6 +193,8 @@ pub struct ConnectionSnapshot {
     pub tun_active: bool,
     #[serde(default)]
     pub can_use_tun: bool,
+    #[serde(default)]
+    pub tun_service_status: String,
     pub active_node_name: String,
     pub active_node_protocol: String,
     pub last_error: Option<String>,

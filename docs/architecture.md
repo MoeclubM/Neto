@@ -19,7 +19,7 @@ flowchart TB
     subgraph Bridge["桥接与平台系统层"]
         B0["crates/neto-ffi (C ABI & JNI)"]
         P1["neto-platform-android (VpnService fd protect)"]
-        P2["neto-platform-windows (WinINet & HKCU Run)"]
+        P2["neto-platform-windows + neto-service (WinINet, HKCU Run, Named Pipe TUN Service)"]
         P3["neto-platform-linux (Wayland, gsettings/KDE, SNI Tray)"]
     end
     subgraph Core["共享核心层 (crates/neto-core)"]
@@ -47,10 +47,10 @@ flowchart TB
   - 自动内联展开 HTTP `rule-providers` 规则集，并保留 `proxy-groups` 策略组与节点延迟记录。
   - 提供 `upsert_managed_profile` 接口，允许 `XBClient` 等商业客户端将鉴权后获取的节点、路由规则和套餐配额直接同步进 `NetoController`。
 - `dashboard.rs`：
-  - 定义 `network_speed`、`outbound_mode`、`current_outbound`、`network_takeover`、`traffic_usage`、`profiles_summary`、`latency_probe`、`runtime_info` 八类主页模块，支持启用/隐藏、顺序重排与恢复默认。
+  - 定义 `network_speed`、`active_connections`、`exit_check`、`traffic_usage`、`profiles_summary`、`latency_probe`、`runtime_info` 七类主页状态模块，支持启用/隐藏、顺序重排与恢复默认，不与主页顶部连接/节点/模式控制重复。
 
 ## 平台系统组件
 
 - **Android**：`NetoVpnService` 跟踪非 VPN 物理网络（`ConnectivityManager`）并通过 `bindSocket` + `protect` 保护底层出站连接，避免 Wi-Fi / 蜂窝切换后断流；使用 `<queries>` 声明兼容应用分流枚举。
-- **Windows**：`neto-platform-windows` 直接调用 Win32 `InternetSetOptionW` 配置系统代理并在 `HKCU\Software\<AppId>\SystemProxy` 备份原始代理设置，断开连接或退出时无损还原；搭配 `wintun.dll` 提供全局 TUN 网卡接管。
+- **Windows**：主界面始终以普通用户权限（`asInvoker`）运行；全局 TUN 接管由独立的 `neto-service.exe`（`LocalSystem` Windows 服务）搭配 `wintun.dll` 承载，主进程通过命名管道 `\\.\pipe\<AppId>TunService` 下发与停止 TUN 会话，首次开启或服务未就绪时按需单次提权安装并启动服务；`neto-platform-windows` 调用 Win32 `InternetSetOptionW` 配置系统代理并在 `HKCU\Software\<AppId>\SystemProxy` 备份与还原代理设置。
 - **Linux Wayland**：默认启用 `GDK_BACKEND=wayland,x11`，通过 `ksni` 实现符合 freedesktop `StatusNotifierItem` 规范的 D-Bus 原生托盘菜单，并自动识别 GNOME `gsettings` 与 KDE `kwriteconfig6`/`kwriteconfig5` 应用系统代理。

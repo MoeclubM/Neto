@@ -119,6 +119,8 @@ pub struct StartVpnRequest {
     pub node: Value,
     #[serde(default)]
     pub route: Option<crate::route::StartRouteRequest>,
+    #[serde(default)]
+    pub pipe_name: Option<String>,
     pub tun_fd: Option<i32>,
     pub mtu: u16,
     pub dns: String,
@@ -702,6 +704,11 @@ mod platform {
         _core: Option<aerion::ProxyCore>,
     }
 
+    enum TunWaitHandle {
+        Local(aerion::TunRuntime),
+        Remote(JoinHandle<Result<()>>),
+    }
+
     fn abort_tasks(tasks: Vec<JoinHandle<Result<()>>>) {
         for task in tasks {
             task.abort();
@@ -805,19 +812,55 @@ mod platform {
         tun_config.verbosity = TunVerbosity::Info;
 
         let log_bridge = aerion::LogBridge::new();
-        let runtime = match spawn_tun(tun_config) {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                if let Some(core) = core {
-                    core.cancel_all_sessions();
+        let remote_pipe = request
+            .pipe_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let (shutdown, wait_handle) = if cfg!(target_os = "windows") && remote_pipe.is_some() {
+            #[cfg(target_os = "windows")]
+            {
+                let spec = crate::tun_service::TunSpec {
+                    socks_addr,
+                    mtu,
+                    dns: dns_name.clone(),
+                    dns_addr,
+                    virtual_dns_pool: virtual_dns_pool.clone(),
+                    bypass: tun_config.bypass.clone(),
+                    ipv6: tun_config.ipv6,
+                    tcp_timeout_secs: request.tcp_timeout_secs,
+                    udp_timeout_secs: tun_config.udp_timeout_secs,
+                    max_sessions: tun_config.max_sessions,
+                };
+                match crate::tun_service::start_remote_tun(remote_pipe.unwrap(), &spec).await {
+                    Ok((token, task)) => (token, TunWaitHandle::Remote(task)),
+                    Err(error) => {
+                        if let Some(core) = core {
+                            core.cancel_all_sessions();
+                        }
+                        ingress_task.abort();
+                        abort_tasks(proxy_tasks);
+                        clear_outbound_if_idle();
+                        return Err(error);
+                    }
                 }
-                ingress_task.abort();
-                abort_tasks(proxy_tasks);
-                clear_outbound_if_idle();
-                return Err(error).context("spawn Aerion TUN runtime");
+            }
+            #[cfg(not(target_os = "windows"))]
+            unreachable!()
+        } else {
+            match spawn_tun(tun_config) {
+                Ok(runtime) => (runtime.shutdown_token(), TunWaitHandle::Local(runtime)),
+                Err(error) => {
+                    if let Some(core) = core {
+                        core.cancel_all_sessions();
+                    }
+                    ingress_task.abort();
+                    abort_tasks(proxy_tasks);
+                    clear_outbound_if_idle();
+                    return Err(error).context("spawn Aerion TUN runtime");
+                }
             }
         };
-        let shutdown = runtime.shutdown_token();
         let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
         let session_id = NEXT_VPN_SESSION_ID.fetch_add(1, Ordering::SeqCst);
 
@@ -857,11 +900,18 @@ mod platform {
             );
 
         tokio::spawn(async move {
-            let result = runtime
-                .wait()
-                .await
-                .map(|_| ())
-                .map_err(|error| format!("{error:#}"));
+            let result = match wait_handle {
+                TunWaitHandle::Local(runtime) => runtime
+                    .wait()
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| format!("{error:#}")),
+                TunWaitHandle::Remote(task) => match task.await {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(error)) => Err(format!("{error:#}")),
+                    Err(error) => Err(format!("{error:#}")),
+                },
+            };
             if let Some(session) = VPN_SESSIONS
                 .lock()
                 .expect("VPN session map lock poisoned")

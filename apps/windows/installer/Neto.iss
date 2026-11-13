@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "0.0.4"
+  #define MyAppVersion "0.0.5"
 #endif
 
 #ifndef PublishDir
@@ -60,11 +60,31 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: 
 Filename: "{app}\Neto.exe"; Description: "{cm:LaunchProgram,Neto}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+function HasInstalledTunService(): Boolean;
+begin
+  Result := RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\NetoTunService');
+end;
+
+procedure RunServiceCommand(const Args: String);
+var
+  SvcExe: String;
+  ResultCode: Integer;
+begin
+  SvcExe := ExpandConstant('{app}\neto-service.exe');
+  if not FileExists(SvcExe) then Exit;
+  if IsAdminInstallMode() then
+    Exec(SvcExe, Args, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+  else
+    ShellExec('runas', SvcExe, Args, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 procedure StopRunningNeto();
 var
   ResultCode: Integer;
 begin
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Neto.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if HasInstalledTunService() then
+    RunServiceCommand('stop --id "Neto"');
 end;
 
 function InitializeSetup(): Boolean;
@@ -73,9 +93,17 @@ begin
   Result := True;
 end;
 
-function InitializeUninstall(): Boolean;
+procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  StopRunningNeto();
+  if (CurStep = ssPostInstall) and HasInstalledTunService() then
+    RunServiceCommand('install --id "Neto"');
+end;
+
+function InitializeUninstall(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Neto.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Result := True;
 end;
 
@@ -83,6 +111,8 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
   begin
+    if HasInstalledTunService() then
+      RunServiceCommand('uninstall --id "Neto"');
     if RegKeyExists(HKCU, 'Software\Neto\SystemProxy') then
     begin
       RegWriteDWordValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Internet Settings', 'ProxyEnable', 0);

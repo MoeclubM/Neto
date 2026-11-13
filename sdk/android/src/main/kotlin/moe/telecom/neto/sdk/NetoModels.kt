@@ -26,9 +26,6 @@ data class NetoWidgetItem(
     val titleZh: String
         get() = when (id) {
             "network_speed" -> "实时速率"
-            "outbound_mode" -> "出站模式"
-            "current_outbound" -> "当前节点"
-            "network_takeover" -> "网络接管"
             "active_connections" -> "活跃会话"
             "exit_check" -> "出口检测"
             "traffic_usage" -> "流量统计"
@@ -118,13 +115,19 @@ data class NetoActiveConnection(
     val outbound: String,
     val uploadBytes: Long,
     val downloadBytes: Long,
+    val uploadSpeedBps: Long = 0L,
+    val downloadSpeedBps: Long = 0L,
     val startedAtMs: Long,
+    val closedAtMs: Long = 0L,
 )
 
 data class NetoConnectionsSnapshot(
     val active: List<NetoActiveConnection> = emptyList(),
+    val closed: List<NetoActiveConnection> = emptyList(),
     val totalUploadBytes: Long = 0L,
     val totalDownloadBytes: Long = 0L,
+    val totalUploadSpeedBps: Long = 0L,
+    val totalDownloadSpeedBps: Long = 0L,
 )
 
 data class NetoConnectivityTarget(
@@ -394,4 +397,9 @@ fun formatNetoDuration(durationMs: Long): String {
 fun formatNetoUnixDate(unixSec: Long): String {
     if (unixSec <= 0L) return "-"
     return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(unixSec * 1000L))
+}
+
+fun formatNetoTimeMs(epochMs: Long): String {
+    if (epochMs <= 0L) return "-"
+    return SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(epochMs))
 }

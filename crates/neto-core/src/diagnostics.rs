@@ -281,3 +281,43 @@ pub fn parse_rule_items(yaml: &str, filter: &str, limit: usize) -> Result<(usize
     }
     Ok((total, items))
 }
+
+pub fn validate_custom_route_yaml(yaml: &str) -> Result<String> {
+    let sanitized = sanitize_mihomo_route_yaml(yaml)?;
+    let cfg: aerion::MihomoConfig =
+        serde_yaml::from_str(&sanitized).context("解析分流规则配置失败")?;
+    ensure!(!cfg.rules.is_empty(), "分流配置未包含任何规则");
+    Ok(sanitized)
+}
+
+pub fn prepend_custom_route_rule(
+    base_yaml: &str,
+    custom_yaml: &str,
+    rule_line: &str,
+) -> Result<String> {
+    let rule = rule_line.trim();
+    ensure!(!rule.is_empty(), "规则内容不能为空");
+    let seed = if !custom_yaml.trim().is_empty() {
+        custom_yaml.trim()
+    } else if !base_yaml.trim().is_empty() {
+        base_yaml.trim()
+    } else {
+        "rules:\n  - MATCH,PROXY\n"
+    };
+    let sanitized = sanitize_mihomo_route_yaml(seed)?;
+    let mut root: serde_yaml::Value = serde_yaml::from_str(&sanitized)?;
+    let map = root
+        .as_mapping_mut()
+        .context("规则配置根节点必须是 YAML 映射")?;
+    let rules_key = serde_yaml::Value::String("rules".into());
+    let entry = map
+        .entry(rules_key)
+        .or_insert_with(|| serde_yaml::Value::Sequence(Vec::new()));
+    let seq = entry
+        .as_sequence_mut()
+        .context("rules 字段必须是列表")?;
+    seq.insert(0, serde_yaml::Value::String(rule.to_string()));
+    let encoded = serde_yaml::to_string(&root)?;
+    validate_custom_route_yaml(&encoded)?;
+    Ok(encoded)
+}

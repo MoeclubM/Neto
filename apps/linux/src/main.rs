@@ -13,9 +13,9 @@ fn main() -> anyhow::Result<()> {
         prefer_wayland_backend,
     };
     use neto_ui_gtk::{
-        connect_view::ConnectView, connections_view::ConnectionsView,
-        dashboard_view::DashboardView, install_neto_css, nodes_view::NodesView,
-        profiles_view::ProfilesView, settings_view::SettingsView,
+        connections_view::ConnectionsView, home_view::HomeView, install_neto_css,
+        nodes_view::NodesView, profiles_view::ProfilesView, rules_view::RulesView,
+        settings_view::SettingsView,
     };
     use std::path::PathBuf;
     use std::rc::Rc;
@@ -53,34 +53,29 @@ fn main() -> anyhow::Result<()> {
         let open_connections: Rc<dyn Fn()> = Rc::new(move || {
             stack_for_conns.set_visible_child_name("connections");
         });
+        let stack_for_profiles = stack.clone();
+        let open_profiles: Rc<dyn Fn()> = Rc::new(move || {
+            stack_for_profiles.set_visible_child_name("profiles");
+        });
 
-        let connect_view = ConnectView::new(
-            ctrl_activate.clone(),
-            handle_activate.clone(),
-            open_nodes.clone(),
-        );
-        let dashboard_view = DashboardView::new(
+        let home_view = HomeView::new(
             ctrl_activate.clone(),
             handle_activate.clone(),
             open_nodes,
         );
-        dashboard_view.set_on_open_connections(open_connections);
+        home_view.set_on_open_connections(open_connections);
+        home_view.set_on_open_profiles(open_profiles);
         let nodes_view = NodesView::new(ctrl_activate.clone(), handle_activate.clone());
         let connections_view = ConnectionsView::new(ctrl_activate.clone(), handle_activate.clone());
+        let rules_view = RulesView::new(ctrl_activate.clone(), handle_activate.clone());
         let profiles_view = ProfilesView::new(ctrl_activate.clone(), handle_activate.clone());
         let settings_view = SettingsView::new(ctrl_activate.clone());
 
         stack.add_titled_with_icon(
-            &connect_view.root,
-            Some("connect"),
-            "连接",
-            "network-vpn-symbolic",
-        );
-        stack.add_titled_with_icon(
-            &dashboard_view.root,
-            Some("dashboard"),
+            &home_view.root,
+            Some("home"),
             "主页",
-            "speedometer-symbolic",
+            "go-home-symbolic",
         );
         stack.add_titled_with_icon(
             &nodes_view.root,
@@ -93,6 +88,12 @@ fn main() -> anyhow::Result<()> {
             Some("connections"),
             "会话",
             "network-transmit-receive-symbolic",
+        );
+        stack.add_titled_with_icon(
+            &rules_view.root,
+            Some("rules"),
+            "规则",
+            "view-list-symbolic",
         );
         stack.add_titled_with_icon(
             &profiles_view.root,
@@ -136,10 +137,10 @@ fn main() -> anyhow::Result<()> {
                     sv.reset_to_root();
                 }
                 let text = match name.as_deref() {
-                    Some("connect") | None => "",
-                    Some("dashboard") => "主页",
+                    Some("home") | None => "",
                     Some("nodes") => "节点",
                     Some("connections") => "会话",
+                    Some("rules") => "规则",
                     Some("profiles") => "订阅",
                     Some("settings") => "设置",
                     _ => "",
@@ -162,10 +163,10 @@ fn main() -> anyhow::Result<()> {
         });
 
         let snap0 = ctrl_activate.snapshot();
-        connect_view.apply_snapshot(&snap0);
-        dashboard_view.apply_snapshot(&snap0);
+        home_view.apply_snapshot(&snap0);
         nodes_view.apply_snapshot(&snap0);
         connections_view.apply_snapshot(&snap0);
+        rules_view.apply_snapshot(&snap0);
         profiles_view.apply_snapshot(&snap0);
         settings_view.apply_snapshot(&snap0);
 
@@ -246,10 +247,10 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 let snap = ctrl.snapshot();
-                connect_view.apply_snapshot(&snap);
-                dashboard_view.apply_snapshot(&snap);
+                home_view.apply_snapshot(&snap);
                 nodes_view.apply_snapshot(&snap);
                 connections_view.apply_snapshot(&snap);
+                rules_view.apply_snapshot(&snap);
                 profiles_view.apply_snapshot(&snap);
                 settings_view.apply_snapshot(&snap);
                 if let Some(th) = holder.borrow().clone() {

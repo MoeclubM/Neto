@@ -52,15 +52,17 @@ jobs:
       - shell: bash
         run: |
           ver="${GITHUB_REF_NAME#v}"
-          cargo build --release -p neto-ffi
+          cargo build --release -p neto-ffi -p neto-service
           mkdir -p apps/windows/native dist
           cp target/release/neto_ffi.dll apps/windows/native/
           cp target/release/wintun.dll apps/windows/native/
+          cp target/release/neto-service.exe apps/windows/native/
           dotnet publish apps/windows/Neto.Windows.csproj -c Release -r win-x64 -p:Version="$ver" -o dist/Neto
           test -f dist/Neto/Neto.exe
           test -f dist/Neto/Neto.pri
           test -f dist/Neto/neto_ffi.dll
           test -f dist/Neto/wintun.dll
+          test -f dist/Neto/neto-service.exe
           powershell -NoProfile -Command "Compress-Archive -Path 'dist/Neto' -DestinationPath 'dist/Neto-${GITHUB_REF_NAME}-windows-x64.zip' -Force"
       - name: Build Windows installer (Inno Setup)
         shell: pwsh

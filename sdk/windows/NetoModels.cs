@@ -15,6 +15,7 @@ public sealed class NetoConnection
     [JsonPropertyName("system_proxy_active")] public bool SystemProxyActive { get; set; }
     [JsonPropertyName("tun_active")] public bool TunActive { get; set; }
     [JsonPropertyName("can_use_tun")] public bool CanUseTun { get; set; }
+    [JsonPropertyName("tun_service_status")] public string TunServiceStatus { get; set; } = "unsupported";
     [JsonPropertyName("active_node_name")] public string ActiveNodeName { get; set; } = "";
     [JsonPropertyName("active_node_protocol")] public string ActiveNodeProtocol { get; set; } = "";
     [JsonPropertyName("last_error")] public string? LastError { get; set; }
@@ -29,9 +30,6 @@ public sealed class NetoWidgetItem
     public string TitleZh => Id switch
     {
         "network_speed" => "实时速率",
-        "outbound_mode" => "出站模式",
-        "current_outbound" => "当前节点",
-        "network_takeover" => "网络接管",
         "active_connections" => "活跃会话",
         "exit_check" => "出口检测",
         "traffic_usage" => "流量统计",
@@ -127,14 +125,20 @@ public sealed class NetoActiveConnection
     [JsonPropertyName("outbound")] public string Outbound { get; set; } = "";
     [JsonPropertyName("upload_bytes")] public ulong UploadBytes { get; set; }
     [JsonPropertyName("download_bytes")] public ulong DownloadBytes { get; set; }
+    [JsonPropertyName("upload_speed_bps")] public ulong UploadSpeedBps { get; set; }
+    [JsonPropertyName("download_speed_bps")] public ulong DownloadSpeedBps { get; set; }
     [JsonPropertyName("started_at_ms")] public ulong StartedAtMs { get; set; }
+    [JsonPropertyName("closed_at_ms")] public ulong ClosedAtMs { get; set; }
 }
 
 public sealed class NetoConnectionsSnapshot
 {
     [JsonPropertyName("active")] public List<NetoActiveConnection> Active { get; set; } = [];
+    [JsonPropertyName("closed")] public List<NetoActiveConnection> Closed { get; set; } = [];
     [JsonPropertyName("total_upload_bytes")] public ulong TotalUploadBytes { get; set; }
     [JsonPropertyName("total_download_bytes")] public ulong TotalDownloadBytes { get; set; }
+    [JsonPropertyName("total_upload_speed_bps")] public ulong TotalUploadSpeedBps { get; set; }
+    [JsonPropertyName("total_download_speed_bps")] public ulong TotalDownloadSpeedBps { get; set; }
 }
 
 public sealed class NetoConnectivityTarget

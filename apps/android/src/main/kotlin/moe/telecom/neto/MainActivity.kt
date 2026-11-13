@@ -18,11 +18,12 @@ import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.AltRoute
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,11 +34,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import moe.telecom.neto.sdk.NetoConnectPane
+import moe.telecom.neto.sdk.NetoConnectionsPane
 import moe.telecom.neto.sdk.NetoControllerClient
-import moe.telecom.neto.sdk.NetoDashboardPane
+import moe.telecom.neto.sdk.NetoHomePane
 import moe.telecom.neto.sdk.NetoNodesPane
 import moe.telecom.neto.sdk.NetoProfilesPane
+import moe.telecom.neto.sdk.NetoRulesPane
 import moe.telecom.neto.sdk.NetoSettingsPane
 import moe.telecom.neto.sdk.NetoTheme
 import top.yukonga.miuix.kmp.basic.NavigationBar
@@ -47,9 +49,10 @@ import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 enum class NetoTab(val title: String, val icon: ImageVector) {
-    CONNECT("连接", Icons.Rounded.Bolt),
-    DASHBOARD("主页", Icons.Rounded.Speed),
+    HOME("主页", Icons.Rounded.Bolt),
     NODES("节点", Icons.Rounded.Dns),
+    CONNECTIONS("会话", Icons.Rounded.SwapVert),
+    RULES("规则", Icons.AutoMirrored.Rounded.AltRoute),
     PROFILES("订阅", Icons.Rounded.CloudDownload),
     SETTINGS("设置", Icons.Rounded.Settings),
 }
@@ -142,12 +145,12 @@ private fun NetoStandaloneApp(
     actionError: String?,
     onRequestConnect: () -> Unit,
 ) {
-    var currentTab by rememberSaveable { mutableStateOf(NetoTab.CONNECT) }
+    var currentTab by rememberSaveable { mutableStateOf(NetoTab.HOME) }
     val layoutDir = LocalLayoutDirection.current
 
     Scaffold(
         topBar = {
-            if (currentTab != NetoTab.CONNECT) {
+            if (currentTab != NetoTab.HOME) {
                 TopAppBar(
                     color = MiuixTheme.colorScheme.surface,
                     title = currentTab.title,
@@ -178,22 +181,26 @@ private fun NetoStandaloneApp(
                 ),
         ) {
             when (currentTab) {
-                NetoTab.CONNECT -> NetoConnectPane(
+                NetoTab.HOME -> NetoHomePane(
                     snapshot = snapshot,
+                    client = client,
                     onToggleConnect = {
                         if (snapshot.connection.connected) client.stopVpn() else onRequestConnect()
                     },
-                    onSelectRoutingMode = client::setRoutingMode,
-                    onOpenNodes = { currentTab = NetoTab.NODES },
-                    actionError = actionError,
-                )
-                NetoTab.DASHBOARD -> NetoDashboardPane(
-                    snapshot = snapshot,
-                    client = client,
                     onOpenNodes = { currentTab = NetoTab.NODES },
                     onOpenProfiles = { currentTab = NetoTab.PROFILES },
+                    onOpenConnections = { currentTab = NetoTab.CONNECTIONS },
+                    actionError = actionError,
                 )
                 NetoTab.NODES -> NetoNodesPane(
+                    snapshot = snapshot,
+                    client = client,
+                )
+                NetoTab.CONNECTIONS -> NetoConnectionsPane(
+                    snapshot = snapshot,
+                    client = client,
+                )
+                NetoTab.RULES -> NetoRulesPane(
                     snapshot = snapshot,
                     client = client,
                 )

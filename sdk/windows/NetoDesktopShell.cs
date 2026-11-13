@@ -1,7 +1,5 @@
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Security.Principal;
 using System.Text;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -46,7 +44,7 @@ public sealed class SingleInstanceGuard : IDisposable
         thread.Start();
     }
 
-    public static SingleInstanceGuard? TryAcquireOrWakeExisting(string appId, bool waitForRelaunch, Action onSecondInstance)
+    public static SingleInstanceGuard? TryAcquireOrWakeExisting(string appId, Action onSecondInstance)
     {
         var safeId = new string((string.IsNullOrWhiteSpace(appId) ? "Neto" : appId)
             .Where(c => char.IsLetterOrDigit(c) || c == '_' || c == '-')
@@ -61,7 +59,7 @@ public sealed class SingleInstanceGuard : IDisposable
         var acquired = false;
         try
         {
-            acquired = mutex.WaitOne(waitForRelaunch ? TimeSpan.FromMilliseconds(3500) : TimeSpan.Zero, false);
+            acquired = mutex.WaitOne(TimeSpan.Zero, false);
         }
         catch (AbandonedMutexException)
         {
@@ -108,12 +106,6 @@ public static class NetoWindowHelper
     private const int OFN_FILEMUSTEXIST = 0x00001000;
     private const int OFN_PATHMUSTEXIST = 0x00000800;
     private const int OFN_NOCHANGEDIR = 0x00000008;
-
-    public static bool IsProcessElevated()
-    {
-        using var identity = WindowsIdentity.GetCurrent();
-        return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
-    }
 
     public static void ConfigureWindow(AppWindow appWindow, int width, int height, int minWidth = 780, int minHeight = 560)
     {
@@ -179,30 +171,6 @@ public static class NetoWindowHelper
         if (hwnd != IntPtr.Zero)
         {
             DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref isDark, sizeof(int));
-        }
-    }
-
-    public static bool TryRestartElevated(SingleInstanceGuard? guard)
-    {
-        var exe = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(exe)) return false;
-        try
-        {
-            guard?.ReleaseMutexEarly();
-            var psi = new ProcessStartInfo
-            {
-                FileName = exe,
-                Arguments = "--relaunch-elevated",
-                WorkingDirectory = AppContext.BaseDirectory,
-                UseShellExecute = true,
-                Verb = "runas",
-            };
-            Process.Start(psi);
-            return true;
-        }
-        catch (Win32Exception)
-        {
-            return false;
         }
     }
 

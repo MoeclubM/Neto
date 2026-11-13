@@ -152,17 +152,39 @@ fun NetoSpeedChartCard(
     upBps: Long,
     downBps: Long,
     modifier: Modifier = Modifier,
+    title: String? = null,
 ) {
     val gridColor = MiuixTheme.colorScheme.outline
     val upColor = MiuixTheme.colorScheme.primary
     val downColor = MiuixTheme.colorScheme.secondary
     Card(modifier = modifier, insideMargin = PaddingValues(12.dp)) {
-        Text(
-            "↑ ${formatNetoSpeed(upBps)}  ↓ ${formatNetoSpeed(downBps)}",
-            style = MiuixTheme.textStyles.body2,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        if (!title.isNullOrBlank()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = title,
+                    style = MiuixTheme.textStyles.body2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+                Text(
+                    text = "↑ ${formatNetoSpeed(upBps)}  ↓ ${formatNetoSpeed(downBps)}",
+                    style = MiuixTheme.textStyles.body2,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        } else {
+            Text(
+                "↑ ${formatNetoSpeed(upBps)}  ↓ ${formatNetoSpeed(downBps)}",
+                style = MiuixTheme.textStyles.body2,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         Spacer(Modifier.height(8.dp))
         Canvas(modifier = Modifier.fillMaxWidth().height(68.dp)) {
             drawChartGrid(gridColor)
@@ -178,18 +200,50 @@ fun NetoLatencyChartCard(
     samples: List<Long>,
     currentMs: Long?,
     modifier: Modifier = Modifier,
+    title: String? = null,
+    trailing: (@Composable () -> Unit)? = null,
 ) {
     val gridColor = MiuixTheme.colorScheme.outline
     val lineColor = MiuixTheme.colorScheme.primary
     val label = if (currentMs != null && currentMs >= 0L) "$currentMs ms" else "- ms"
     Card(modifier = modifier, insideMargin = PaddingValues(12.dp)) {
-        Text(
-            label,
-            style = MiuixTheme.textStyles.body2,
-            color = lineColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        if (!title.isNullOrBlank() || trailing != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (!title.isNullOrBlank()) {
+                        Text(
+                            text = title,
+                            style = MiuixTheme.textStyles.body2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                    Text(
+                        text = label,
+                        style = MiuixTheme.textStyles.body2,
+                        fontWeight = FontWeight.SemiBold,
+                        color = lineColor,
+                    )
+                }
+                if (trailing != null) {
+                    trailing()
+                }
+            }
+        } else {
+            Text(
+                label,
+                style = MiuixTheme.textStyles.body2,
+                color = lineColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         Spacer(Modifier.height(8.dp))
         Canvas(modifier = Modifier.fillMaxWidth().height(68.dp)) {
             drawChartGrid(gridColor)

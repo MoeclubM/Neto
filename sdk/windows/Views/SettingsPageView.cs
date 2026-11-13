@@ -12,23 +12,22 @@ public sealed class SettingsPageView
     public ScrollViewer Root { get; }
     private readonly NetoClient _client;
     private readonly Action<string>? _onThemeChanged;
-    private readonly Action? _onRequestElevation;
     private readonly StackPanel _rootPane;
     private readonly StackPanel _subPane;
     private readonly StackPanel _dnsTunPane;
-    private readonly StackPanel _customRoutePane;
     private readonly StackPanel _systemToolsPane;
     private readonly StackPanel _logsPane;
     private readonly ComboBox _themeCombo;
     private readonly ToggleSwitch _autostartSwitch;
     private readonly ToggleSwitch _silentStartSwitch;
-    private readonly Border _adminBadge;
-    private readonly Button _elevateBtn;
     private readonly NumberBox _portBox;
     private readonly TextBlock _portFeedbackText;
     private readonly ToggleSwitch _lanSwitch;
+    private readonly Grid _tunServiceRow;
+    private readonly StackPanel _tunServiceStatusHost;
+    private readonly Button _tunServiceActionBtn;
+    private readonly TextBlock _tunServiceFeedbackText;
     private readonly TextBlock _dnsTunSummaryText;
-    private readonly TextBlock _routeSummaryText;
     private readonly TextBlock _toolsSummaryText;
     private readonly TextBlock _logsSummaryText;
     private readonly ToggleSwitch _ipv6Switch;
@@ -40,8 +39,6 @@ public sealed class SettingsPageView
     private readonly TextBox _directDnsBox;
     private readonly TextBox _testUrlBox;
     private readonly TextBlock _dnsSaveFeedbackText;
-    private readonly TextBox _customRouteBox;
-    private readonly TextBlock _routeSaveFeedbackText;
     private readonly TextBox _bypassBox;
     private readonly TextBlock _bypassFeedbackText;
     private readonly ComboBox _shellFormatCombo;
@@ -83,11 +80,10 @@ public sealed class SettingsPageView
         ("direct", "直连 DNS"),
     ];
 
-    public SettingsPageView(NetoClient client, Action<string>? onThemeChanged = null, Action? onRequestElevation = null)
+    public SettingsPageView(NetoClient client, Action<string>? onThemeChanged = null)
     {
         _client = client;
         _onThemeChanged = onThemeChanged;
-        _onRequestElevation = onRequestElevation;
 
         var outer = new StackPanel
         {
@@ -126,16 +122,8 @@ public sealed class SettingsPageView
         generalStack.Children.Add(NetoUiFactory.CreateSettingRow("启动时最小化到托盘", _silentStartSwitch));
         _rootPane.Children.Add(NetoUiFactory.CreateCard(generalStack));
 
-        var privRight = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-        _adminBadge = NetoUiFactory.CreateTagBadge("已获管理员权限", Color.FromArgb(255, 42, 168, 118));
-        _adminBadge.Visibility = Visibility.Collapsed;
-        _elevateBtn = new Button { Content = "以管理员身份重启", Padding = new Thickness(10, 4, 10, 4), Visibility = Visibility.Collapsed };
-        _elevateBtn.Click += (_, _) => _onRequestElevation?.Invoke();
-        privRight.Children.Add(_adminBadge);
-        privRight.Children.Add(_elevateBtn);
-
         var accessStack = new StackPanel { Spacing = 4 };
-        accessStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("网络接入", privRight));
+        accessStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("网络接入"));
         _portBox = new NumberBox
         {
             Width = 124,
@@ -170,8 +158,48 @@ public sealed class SettingsPageView
             if (_updating) return;
             await _client.UpdateNetworkSettingsAsync(new JsonObject { ["allow_lan"] = _lanSwitch.IsOn });
         };
+        _tunServiceStatusHost = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        _tunServiceFeedbackText = new TextBlock
+        {
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = new SolidColorBrush(Color.FromArgb(255, 216, 82, 76)),
+            Visibility = Visibility.Collapsed,
+        };
+        _tunServiceActionBtn = new Button { Content = "安装服务" };
+        _tunServiceActionBtn.Click += async (_, _) =>
+        {
+            _tunServiceActionBtn.IsEnabled = false;
+            _tunServiceFeedbackText.Visibility = Visibility.Collapsed;
+            try
+            {
+                if (string.Equals(_client.Snapshot.Connection.TunServiceStatus, "running", StringComparison.OrdinalIgnoreCase))
+                {
+                    await _client.UninstallTunServiceAsync();
+                }
+                else
+                {
+                    await _client.InstallTunServiceAsync();
+                }
+                if (!string.IsNullOrWhiteSpace(_client.LastActionError))
+                {
+                    _tunServiceFeedbackText.Text = _client.LastActionError;
+                    _tunServiceFeedbackText.Visibility = Visibility.Visible;
+                }
+            }
+            finally
+            {
+                _tunServiceActionBtn.IsEnabled = true;
+            }
+        };
+        var tunServiceRight = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        tunServiceRight.Children.Add(_tunServiceFeedbackText);
+        tunServiceRight.Children.Add(_tunServiceStatusHost);
+        tunServiceRight.Children.Add(_tunServiceActionBtn);
+        _tunServiceRow = NetoUiFactory.CreateSettingRow("TUN 服务模式", tunServiceRight, "通过系统服务管理虚拟网卡，界面保持普通权限运行");
         accessStack.Children.Add(NetoUiFactory.CreateSettingRow("本地混合端口", portRight, "HTTP 与 SOCKS5 共用监听端口"));
         accessStack.Children.Add(NetoUiFactory.CreateSettingRow("允许局域网连接", _lanSwitch));
+        accessStack.Children.Add(_tunServiceRow);
         _rootPane.Children.Add(NetoUiFactory.CreateCard(accessStack));
 
         _rootPane.Children.Add(NetoUiFactory.CreateSectionHeader("高级与诊断"));
@@ -181,17 +209,17 @@ public sealed class SettingsPageView
         navGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         navGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         _dnsTunSummaryText = new TextBlock();
-        _routeSummaryText = new TextBlock();
         _toolsSummaryText = new TextBlock { Text = "绕过地址、环境变量与数据目录" };
         _logsSummaryText = new TextBlock { Text = "筛选、搜索与复制运行日志" };
         PlaceGridCell(navGrid, NetoUiFactory.CreateNavEntryRow("DNS 与 TUN 参数", _dnsTunSummaryText, () => OpenSubpage("dns_tun")), 0, 0);
-        PlaceGridCell(navGrid, NetoUiFactory.CreateNavEntryRow("分流规则覆写", _routeSummaryText, () => OpenSubpage("custom_route")), 0, 1);
-        PlaceGridCell(navGrid, NetoUiFactory.CreateNavEntryRow("系统代理与外部工具", _toolsSummaryText, () => OpenSubpage("system_tools")), 1, 0);
-        PlaceGridCell(navGrid, NetoUiFactory.CreateNavEntryRow("运行日志", _logsSummaryText, () =>
+        PlaceGridCell(navGrid, NetoUiFactory.CreateNavEntryRow("系统代理与外部工具", _toolsSummaryText, () => OpenSubpage("system_tools")), 0, 1);
+        var logsNav = NetoUiFactory.CreateNavEntryRow("运行日志", _logsSummaryText, () =>
         {
             OpenSubpage("logs");
             _ = RefreshLogsAsync();
-        }), 1, 1);
+        });
+        PlaceGridCell(navGrid, logsNav, 1, 0);
+        Grid.SetColumnSpan(logsNav, 2);
         _rootPane.Children.Add(navGrid);
 
         _extraFooterHost = new StackPanel { Spacing = 10 };
@@ -252,51 +280,6 @@ public sealed class SettingsPageView
         }
         dnsCardStack.Children.Add(formGrid);
         _dnsTunPane.Children.Add(NetoUiFactory.CreateCard(dnsCardStack));
-
-        _customRoutePane = new StackPanel { Spacing = 10, Visibility = Visibility.Collapsed };
-        var routeRight = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        _routeSaveFeedbackText = new TextBlock
-        {
-            FontSize = 12,
-            VerticalAlignment = VerticalAlignment.Center,
-            Foreground = new SolidColorBrush(Color.FromArgb(255, 42, 168, 118)),
-        };
-        var resetRouteBtn = new Button { Content = "恢复默认" };
-        resetRouteBtn.Click += async (_, _) =>
-        {
-            _customRouteBox.Text = "";
-            _inputsDirty = false;
-            await _client.UpdateNetworkSettingsAsync(new JsonObject { ["custom_route_yaml"] = "" });
-            _routeSaveFeedbackText.Text = "已恢复默认";
-            await Task.Delay(1800);
-            if (_routeSaveFeedbackText.Text == "已恢复默认") _routeSaveFeedbackText.Text = "";
-        };
-        var saveRouteBtn = new Button { Content = "保存规则" };
-        NetoUiFactory.ApplyPrimaryButton(saveRouteBtn, true);
-        saveRouteBtn.Click += async (_, _) =>
-        {
-            _inputsDirty = false;
-            await _client.UpdateNetworkSettingsAsync(new JsonObject { ["custom_route_yaml"] = _customRouteBox.Text });
-            _routeSaveFeedbackText.Text = _client.LastActionError ?? "已保存";
-            await Task.Delay(1800);
-            if (_routeSaveFeedbackText.Text == "已保存") _routeSaveFeedbackText.Text = "";
-        };
-        routeRight.Children.Add(_routeSaveFeedbackText);
-        routeRight.Children.Add(resetRouteBtn);
-        routeRight.Children.Add(saveRouteBtn);
-        _customRoutePane.Children.Add(NetoUiFactory.CreateSubpageHeader("分流规则覆写", ResetToRoot, routeRight));
-        _customRouteBox = new TextBox
-        {
-            Header = "自定义 YAML 规则（留空则使用当前订阅规则）",
-            AcceptsReturn = true,
-            TextWrapping = TextWrapping.NoWrap,
-            MinHeight = 300,
-            MaxHeight = 460,
-            FontSize = 12,
-            FontFamily = new FontFamily("Consolas"),
-        };
-        _customRouteBox.TextChanged += (_, _) => { if (!_updating) _inputsDirty = true; };
-        _customRoutePane.Children.Add(NetoUiFactory.CreateCard(_customRouteBox));
 
         _systemToolsPane = new StackPanel { Spacing = 10, Visibility = Visibility.Collapsed };
         _systemToolsPane.Children.Add(NetoUiFactory.CreateSubpageHeader("系统代理与外部工具", ResetToRoot));
@@ -414,7 +397,6 @@ public sealed class SettingsPageView
         _logsPane.Children.Add(NetoUiFactory.CreateCard(logStack));
 
         _subPane.Children.Add(_dnsTunPane);
-        _subPane.Children.Add(_customRoutePane);
         _subPane.Children.Add(_systemToolsPane);
         _subPane.Children.Add(_logsPane);
 
@@ -432,7 +414,6 @@ public sealed class SettingsPageView
     public void OpenSubpage(string key)
     {
         _dnsTunPane.Visibility = key == "dns_tun" ? Visibility.Visible : Visibility.Collapsed;
-        _customRoutePane.Visibility = key == "custom_route" ? Visibility.Visible : Visibility.Collapsed;
         _systemToolsPane.Visibility = key == "system_tools" ? Visibility.Visible : Visibility.Collapsed;
         _logsPane.Visibility = key == "logs" ? Visibility.Visible : Visibility.Collapsed;
         _rootPane.Visibility = Visibility.Collapsed;
@@ -463,8 +444,24 @@ public sealed class SettingsPageView
     {
         var s = snap.Settings;
         _updating = true;
-        _adminBadge.Visibility = snap.Connection.CanUseTun ? Visibility.Visible : Visibility.Collapsed;
-        _elevateBtn.Visibility = !snap.Connection.CanUseTun && _onRequestElevation != null ? Visibility.Visible : Visibility.Collapsed;
+        var svcStatus = (snap.Connection.TunServiceStatus ?? "unsupported").ToLowerInvariant();
+        if (svcStatus == "unsupported")
+        {
+            _tunServiceRow.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            _tunServiceRow.Visibility = Visibility.Visible;
+            _tunServiceStatusHost.Children.Clear();
+            var (label, tint, btnLabel) = svcStatus switch
+            {
+                "running" => ("运行中", Color.FromArgb(255, 42, 168, 118), "卸载服务"),
+                "stopped" => ("已停止", Color.FromArgb(255, 218, 152, 38), "启动服务"),
+                _ => ("未安装", (Color?)null, "安装服务"),
+            };
+            _tunServiceStatusHost.Children.Add(NetoUiFactory.CreateTagBadge(label, tint));
+            _tunServiceActionBtn.Content = btnLabel;
+        }
 
         var themeIdx = Array.FindIndex(ThemeModes, m => m.Key == s.ThemeMode);
         _themeCombo.SelectedIndex = themeIdx >= 0 ? themeIdx : 0;
@@ -476,9 +473,6 @@ public sealed class SettingsPageView
         var dnsIdx = Array.FindIndex(DnsModes, m => m.Key == s.VpnDnsMode);
         var dnsLabel = DnsModes[dnsIdx >= 0 ? dnsIdx : 0].Label;
         _dnsTunSummaryText.Text = $"{dnsLabel} · MTU {s.Mtu} · IPv6 {(s.Ipv6Enabled ? "开" : "关")}";
-        _routeSummaryText.Text = string.IsNullOrWhiteSpace(s.CustomRouteYaml)
-            ? $"跟随订阅规则（共 {snap.RuleCount} 条）"
-            : "已启用自定义规则";
 
         if (!_inputsInitialized || !_inputsDirty)
         {
@@ -491,7 +485,6 @@ public sealed class SettingsPageView
             _overseasDnsBox.Text = s.OverseasDns;
             _directDnsBox.Text = s.DirectDns;
             _testUrlBox.Text = s.NodeTestUrl;
-            _customRouteBox.Text = s.CustomRouteYaml;
         }
         _updating = false;
         UpdateTerminalPreview();
