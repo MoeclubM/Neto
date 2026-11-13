@@ -1,5 +1,6 @@
 package moe.telecom.neto.sdk
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -44,21 +45,143 @@ fun NetoProfilesPane(
     actionError: String?,
     modifier: Modifier = Modifier,
 ) {
-    var name by rememberSaveable { mutableStateOf("") }
-    var url by rememberSaveable { mutableStateOf("") }
+    var subpage by rememberSaveable { mutableStateOf("root") }
+    var quickUrl by rememberSaveable { mutableStateOf("") }
+    var advName by rememberSaveable { mutableStateOf("") }
+    var advUrl by rememberSaveable { mutableStateOf("") }
     var flag by rememberSaveable { mutableStateOf("aerion") }
-    var showYamlImport by rememberSaveable { mutableStateOf(false) }
+    var localName by rememberSaveable { mutableStateOf("") }
     var yamlText by rememberSaveable { mutableStateOf("") }
     var editingProfile by remember { mutableStateOf<NetoProfileBrief?>(null) }
     val flagOptions = listOf("aerion" to "Aerion", "meta" to "Clash Meta")
+
+    BackHandler(enabled = subpage != "root") {
+        subpage = "root"
+    }
+
+    if (subpage == "advanced") {
+        LazyColumn(
+            modifier = modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp),
+            overscrollEffect = null,
+        ) {
+            item(key = "hdr") {
+                NetoSubpageHeader(title = "高级与本地导入", onBack = { subpage = "root" })
+            }
+            item(key = "adv-remote") {
+                SmallTitle("远程订阅参数")
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp)
+                        .padding(bottom = 10.dp),
+                    insideMargin = PaddingValues(14.dp),
+                ) {
+                    TextField(
+                        value = advName,
+                        onValueChange = { advName = it },
+                        label = "备注名称（可选）",
+                        useLabelAsPlaceholder = true,
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    TextField(
+                        value = advUrl,
+                        onValueChange = { advUrl = it },
+                        label = "订阅链接 URL",
+                        useLabelAsPlaceholder = true,
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        flagOptions.forEach { (key, label) ->
+                            Button(
+                                onClick = { flag = key },
+                                modifier = Modifier.weight(1f),
+                                colors = if (flag == key) ButtonDefaults.buttonColorsPrimary() else ButtonDefaults.buttonColors(),
+                            ) {
+                                Text(label)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        Button(
+                            onClick = {
+                                if (advUrl.isNotBlank()) {
+                                    client.addRemoteProfile(advName.trim(), advUrl.trim(), flag = flag) {
+                                        advName = ""
+                                        advUrl = ""
+                                        quickUrl = ""
+                                        subpage = "root"
+                                    }
+                                }
+                            },
+                            enabled = !busy && advUrl.isNotBlank(),
+                            colors = ButtonDefaults.buttonColorsPrimary(),
+                        ) {
+                            Text(if (busy) "导入中" else "拉取添加")
+                        }
+                    }
+                }
+            }
+            item(key = "adv-local") {
+                SmallTitle("本地 YAML 配置")
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp)
+                        .padding(bottom = 10.dp),
+                    insideMargin = PaddingValues(14.dp),
+                ) {
+                    TextField(
+                        value = localName,
+                        onValueChange = { localName = it },
+                        label = "配置名称（可选）",
+                        useLabelAsPlaceholder = true,
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    TextField(
+                        value = yamlText,
+                        onValueChange = { yamlText = it },
+                        label = "粘贴 Clash / Aerion YAML",
+                        useLabelAsPlaceholder = true,
+                        minLines = 7,
+                        maxLines = 14,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        Button(
+                            onClick = {
+                                client.importLocalProfile(localName.trim(), yamlText) {
+                                    localName = ""
+                                    yamlText = ""
+                                    subpage = "root"
+                                }
+                            },
+                            enabled = !busy && yamlText.isNotBlank(),
+                            colors = ButtonDefaults.buttonColorsPrimary(),
+                        ) {
+                            Text("保存本地配置")
+                        }
+                    }
+                }
+            }
+        }
+        return
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(top = 8.dp, bottom = 28.dp),
         overscrollEffect = null,
     ) {
-        item(key = "import-remote") {
-            SmallTitle("添加订阅")
+        item(key = "import-quick") {
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -67,34 +190,13 @@ fun NetoProfilesPane(
                 insideMargin = PaddingValues(14.dp),
             ) {
                 TextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = "名称（可选）",
+                    value = quickUrl,
+                    onValueChange = { quickUrl = it },
+                    label = "https://... 订阅链接 URL",
                     useLabelAsPlaceholder = true,
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Spacer(Modifier.height(8.dp))
-                TextField(
-                    value = url,
-                    onValueChange = { url = it },
-                    label = "订阅链接 URL",
-                    useLabelAsPlaceholder = true,
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    flagOptions.forEach { (key, label) ->
-                        Button(
-                            onClick = { flag = key },
-                            modifier = Modifier.weight(1f),
-                            colors = if (flag == key) ButtonDefaults.buttonColorsPrimary() else ButtonDefaults.buttonColors(),
-                        ) {
-                            Text(label)
-                        }
-                    }
-                }
                 Spacer(Modifier.height(10.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -102,51 +204,26 @@ fun NetoProfilesPane(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     TextButton(
-                        text = if (showYamlImport) "收起本地 YAML" else "导入本地 YAML",
-                        onClick = { showYamlImport = !showYamlImport },
+                        text = "高级 / 本地导入",
+                        onClick = {
+                            if (quickUrl.isNotBlank() && advUrl.isBlank()) {
+                                advUrl = quickUrl.trim()
+                            }
+                            subpage = "advanced"
+                        },
                     )
                     Button(
                         onClick = {
-                            if (url.isNotBlank()) {
-                                client.addRemoteProfile(name.trim(), url.trim(), flag = flag) {
-                                    name = ""
-                                    url = ""
+                            if (quickUrl.isNotBlank()) {
+                                client.addRemoteProfile("", quickUrl.trim(), flag = "aerion") {
+                                    quickUrl = ""
                                 }
                             }
                         },
-                        enabled = !busy && url.isNotBlank(),
+                        enabled = !busy && quickUrl.isNotBlank(),
                         colors = ButtonDefaults.buttonColorsPrimary(),
                     ) {
-                        Text(if (busy) "导入中" else "拉取并添加")
-                    }
-                }
-
-                if (showYamlImport) {
-                    Spacer(Modifier.height(10.dp))
-                    TextField(
-                        value = yamlText,
-                        onValueChange = { yamlText = it },
-                        label = "粘贴 Clash / Aerion YAML",
-                        useLabelAsPlaceholder = true,
-                        minLines = 5,
-                        maxLines = 10,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        Button(
-                            onClick = {
-                                client.importLocalProfile(name.trim(), yamlText) {
-                                    name = ""
-                                    yamlText = ""
-                                    showYamlImport = false
-                                }
-                            },
-                            enabled = !busy && yamlText.isNotBlank(),
-                            colors = ButtonDefaults.buttonColorsPrimary(),
-                        ) {
-                            Text("保存本地配置")
-                        }
+                        Text(if (busy) "导入中" else "导入")
                     }
                 }
             }

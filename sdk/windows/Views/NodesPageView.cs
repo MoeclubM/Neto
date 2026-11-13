@@ -13,10 +13,8 @@ public sealed class NodesPageView
     private readonly NetoClient _client;
     private readonly TextBox _searchBox;
     private readonly ComboBox _protoCombo;
+    private readonly ComboBox _sortCombo;
     private readonly TextBlock _countLabel;
-    private readonly Button _sortDefaultBtn;
-    private readonly Button _sortLatencyBtn;
-    private readonly Button _sortNameBtn;
     private readonly Button _locateBtn;
     private readonly Button _testAllBtn;
     private readonly StackPanel _groupsPanel;
@@ -26,10 +24,18 @@ public sealed class NodesPageView
     private List<string> _protoOptions = [""];
     private FrameworkElement? _selectedCardElement;
     private bool _syncingProto;
+    private bool _syncingSort;
     private string _filter = "";
     private string _protoFilter = "";
     private string _lastSig = "";
     private string _lastProtoListSig = "";
+
+    private static readonly (string Key, string Label)[] SortOptions =
+    [
+        ("default", "默认排序"),
+        ("latency", "延迟优先"),
+        ("name", "名称排序"),
+    ];
 
     public NodesPageView(NetoClient client)
     {
@@ -47,9 +53,7 @@ public sealed class NodesPageView
         };
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(124) });
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(116) });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -72,6 +76,15 @@ public sealed class NodesPageView
             _lastSig = "";
             ApplySnapshot(_client.Snapshot);
         };
+        _sortCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
+        foreach (var (_, label) in SortOptions) _sortCombo.Items.Add(label);
+        _sortCombo.SelectedIndex = 0;
+        _sortCombo.SelectionChanged += async (_, _) =>
+        {
+            if (_syncingSort || _sortCombo.SelectedIndex < 0) return;
+            var key = SortOptions[Math.Clamp(_sortCombo.SelectedIndex, 0, SortOptions.Length - 1)].Key;
+            await _client.SetNodeSortAsync(key);
+        };
         _countLabel = new TextBlock
         {
             FontSize = 12,
@@ -79,15 +92,9 @@ public sealed class NodesPageView
             Margin = new Thickness(4, 0, 4, 0),
             Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
         };
-        _sortDefaultBtn = new Button { Content = "默认" };
-        _sortLatencyBtn = new Button { Content = "延迟" };
-        _sortNameBtn = new Button { Content = "名称" };
         _locateBtn = new Button { Content = "定位" };
         _testAllBtn = new Button { Content = "批量测速" };
 
-        _sortDefaultBtn.Click += async (_, _) => await _client.SetNodeSortAsync("default");
-        _sortLatencyBtn.Click += async (_, _) => await _client.SetNodeSortAsync("latency");
-        _sortNameBtn.Click += async (_, _) => await _client.SetNodeSortAsync("name");
         _locateBtn.Click += (_, _) =>
         {
             if (!string.IsNullOrEmpty(_filter) || !string.IsNullOrEmpty(_protoFilter))
@@ -106,18 +113,14 @@ public sealed class NodesPageView
         _testAllBtn.Click += async (_, _) => await _client.TestAllNodesAsync();
 
         Grid.SetColumn(_protoCombo, 1);
-        Grid.SetColumn(_countLabel, 2);
-        Grid.SetColumn(_sortDefaultBtn, 3);
-        Grid.SetColumn(_sortLatencyBtn, 4);
-        Grid.SetColumn(_sortNameBtn, 5);
-        Grid.SetColumn(_locateBtn, 6);
-        Grid.SetColumn(_testAllBtn, 7);
+        Grid.SetColumn(_sortCombo, 2);
+        Grid.SetColumn(_countLabel, 3);
+        Grid.SetColumn(_locateBtn, 4);
+        Grid.SetColumn(_testAllBtn, 5);
         bar.Children.Add(_searchBox);
         bar.Children.Add(_protoCombo);
+        bar.Children.Add(_sortCombo);
         bar.Children.Add(_countLabel);
-        bar.Children.Add(_sortDefaultBtn);
-        bar.Children.Add(_sortLatencyBtn);
-        bar.Children.Add(_sortNameBtn);
         bar.Children.Add(_locateBtn);
         bar.Children.Add(_testAllBtn);
 
@@ -142,9 +145,14 @@ public sealed class NodesPageView
 
     public void ApplySnapshot(NetoSnapshot snap)
     {
-        NetoUiFactory.ApplyPrimaryButton(_sortDefaultBtn, snap.NodeSortMode == "default");
-        NetoUiFactory.ApplyPrimaryButton(_sortLatencyBtn, snap.NodeSortMode == "latency");
-        NetoUiFactory.ApplyPrimaryButton(_sortNameBtn, snap.NodeSortMode == "name");
+        var sortIdx = Array.FindIndex(SortOptions, s => s.Key == snap.NodeSortMode);
+        var targetSortIdx = sortIdx >= 0 ? sortIdx : 0;
+        if (_sortCombo.SelectedIndex != targetSortIdx)
+        {
+            _syncingSort = true;
+            _sortCombo.SelectedIndex = targetSortIdx;
+            _syncingSort = false;
+        }
         _testAllBtn.Content = snap.NodesTesting ? "测速中..." : "批量测速";
         _testAllBtn.IsEnabled = !snap.NodesTesting && snap.Nodes.Count > 0;
         _locateBtn.IsEnabled = snap.Nodes.Count > 0;
@@ -335,7 +343,7 @@ public sealed class NodesPageView
             var isTesting = _testingIndices.Contains(node.Index);
             var rowGrid = new Grid { ColumnSpacing = 6 };
             rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(AutoSizeOrZero(true), GridUnitType.Auto) });
             rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             var infoStack = new StackPanel { Spacing = 4 };
@@ -418,4 +426,6 @@ public sealed class NodesPageView
             _nodesGrid.Children.Add(card);
         }
     }
+
+    private static double AutoSizeOrZero(bool _) => 0;
 }

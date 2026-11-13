@@ -11,20 +11,19 @@ public sealed class ConnectionsPageView
 {
     public Grid Root { get; }
     public StackPanel HeaderActions { get; }
-
     private readonly NetoClient _client;
     private readonly Button _tabActiveBtn;
     private readonly Button _tabRulesBtn;
     private readonly Grid _activePane;
     private readonly Grid _rulesPane;
-
     private readonly TextBox _connSearchBox;
     private readonly ComboBox _connNetCombo;
     private readonly TextBlock _connSummaryLabel;
     private readonly Button _pauseBtn;
     private readonly Button _closeAllBtn;
     private readonly StackPanel _connListPanel;
-
+    private readonly Border _testerCard;
+    private readonly Button _toggleTesterBtn;
     private readonly TextBox _routeTargetBox;
     private readonly ComboBox _routeNetCombo;
     private readonly TextBlock _routeResultText;
@@ -102,7 +101,7 @@ public sealed class ConnectionsPageView
         _connSearchBox = new TextBox { PlaceholderText = "筛选主机、规则或出站" };
         _connSearchBox.TextChanged += (_, _) =>
         {
-            _connFilter = _connSearchBox.Text.Trim().ToLowerInvariant();
+            _connFilter = (_connSearchBox.Text ?? "").Trim().ToLowerInvariant();
             _lastConnSig = "";
             _ = RefreshConnectionsAsync(forceRender: true);
         };
@@ -173,18 +172,49 @@ public sealed class ConnectionsPageView
             Padding = new Thickness(18, 6, 18, 0),
         };
 
+        var ruleFilterRow = new Grid { ColumnSpacing = 8 };
+        ruleFilterRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        ruleFilterRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        ruleFilterRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        ruleFilterRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        _ruleSearchBox = new TextBox { PlaceholderText = "筛选规则类型、匹配内容或目标策略" };
+        _ruleSearchBox.TextChanged += async (_, _) => await RefreshRulesAsync();
+        _ruleCountLabel = new TextBlock
+        {
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 4, 0),
+            Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+        };
+        _toggleTesterBtn = new Button { Content = "匹配测试" };
+        _toggleTesterBtn.Click += (_, _) =>
+        {
+            var show = _testerCard.Visibility != Visibility.Visible;
+            _testerCard.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            NetoUiFactory.ApplyPrimaryButton(_toggleTesterBtn, show);
+        };
+        var refreshRulesBtn = new Button { Content = "刷新" };
+        refreshRulesBtn.Click += async (_, _) => await RefreshRulesAsync();
+        Grid.SetColumn(_ruleCountLabel, 1);
+        Grid.SetColumn(_toggleTesterBtn, 2);
+        Grid.SetColumn(refreshRulesBtn, 3);
+        ruleFilterRow.Children.Add(_ruleSearchBox);
+        ruleFilterRow.Children.Add(_ruleCountLabel);
+        ruleFilterRow.Children.Add(_toggleTesterBtn);
+        ruleFilterRow.Children.Add(refreshRulesBtn);
+        rulesTopStack.Children.Add(ruleFilterRow);
+
         var testerStack = new StackPanel { Spacing = 8 };
-        testerStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("规则匹配测试"));
         var testerRow = new Grid { ColumnSpacing = 8 };
         testerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         testerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
         testerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        _routeTargetBox = new TextBox { PlaceholderText = "域名或 IP（如 www.google.com 或 223.5.5.5:53）" };
+        _routeTargetBox = new TextBox { PlaceholderText = "输入目标域名或 IP（如 www.google.com 或 223.5.5.5:53）" };
         _routeNetCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
         _routeNetCombo.Items.Add("TCP");
         _routeNetCombo.Items.Add("UDP");
         _routeNetCombo.SelectedIndex = 0;
-        var runTestBtn = new Button { Content = "匹配测试" };
+        var runTestBtn = new Button { Content = "测试" };
         NetoUiFactory.ApplyPrimaryButton(runTestBtn, true);
         runTestBtn.Click += async (_, _) => await RunRouteTestAsync(runTestBtn);
         Grid.SetColumn(_routeNetCombo, 1);
@@ -201,29 +231,9 @@ public sealed class ConnectionsPageView
         };
         testerStack.Children.Add(testerRow);
         testerStack.Children.Add(_routeResultText);
-        rulesTopStack.Children.Add(NetoUiFactory.CreateCard(testerStack, new Thickness(14, 10, 14, 10)));
-
-        var ruleFilterRow = new Grid { ColumnSpacing = 8 };
-        ruleFilterRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        ruleFilterRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        ruleFilterRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        _ruleSearchBox = new TextBox { PlaceholderText = "筛选规则类型、匹配内容或目标策略" };
-        _ruleSearchBox.TextChanged += async (_, _) => await RefreshRulesAsync();
-        _ruleCountLabel = new TextBlock
-        {
-            FontSize = 12,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(4, 0, 4, 0),
-            Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
-        };
-        var refreshRulesBtn = new Button { Content = "刷新" };
-        refreshRulesBtn.Click += async (_, _) => await RefreshRulesAsync();
-        Grid.SetColumn(_ruleCountLabel, 1);
-        Grid.SetColumn(refreshRulesBtn, 2);
-        ruleFilterRow.Children.Add(_ruleSearchBox);
-        ruleFilterRow.Children.Add(_ruleCountLabel);
-        ruleFilterRow.Children.Add(refreshRulesBtn);
-        rulesTopStack.Children.Add(ruleFilterRow);
+        _testerCard = NetoUiFactory.CreateCard(testerStack, new Thickness(14, 10, 14, 10));
+        _testerCard.Visibility = Visibility.Collapsed;
+        rulesTopStack.Children.Add(_testerCard);
 
         _rulesListPanel = new StackPanel
         {
@@ -398,7 +408,7 @@ public sealed class ConnectionsPageView
         _fetchingRules = true;
         try
         {
-            var filter = _ruleSearchBox.Text.Trim();
+            var filter = (_ruleSearchBox.Text ?? "").Trim();
             var res = await _client.GetRulesAsync(filter, 300);
             _rulesLoadedOnce = true;
             _ruleCountLabel.Text = string.IsNullOrEmpty(filter)
@@ -456,7 +466,7 @@ public sealed class ConnectionsPageView
 
     private async Task RunRouteTestAsync(Button triggerBtn)
     {
-        var target = _routeTargetBox.Text.Trim();
+        var target = (_routeTargetBox.Text ?? "").Trim();
         if (string.IsNullOrEmpty(target)) return;
         var net = _routeNetCombo.SelectedIndex == 1 ? "udp" : "tcp";
         triggerBtn.IsEnabled = false;

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio::runtime::Handle;
 
 pub struct ProfilesView {
-    pub root: gtk::ScrolledWindow,
+    pub root: gtk::Stack,
     list_box: gtk::Box,
     status_label: gtk::Label,
     last_sig: RefCell<String>,
@@ -20,11 +20,14 @@ pub struct ProfilesView {
 
 impl ProfilesView {
     pub fn new(controller: Arc<NetoController>, rt: Handle) -> Rc<Self> {
-        let scroll = gtk::ScrolledWindow::builder()
+        let stack = gtk::Stack::new();
+        stack.set_transition_type(gtk::StackTransitionType::SlideLeftRight);
+
+        let main_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
             .build();
-        let clamp = adw::Clamp::builder()
+        let main_clamp = adw::Clamp::builder()
             .maximum_size(760)
             .margin_top(12)
             .margin_bottom(20)
@@ -33,37 +36,20 @@ impl ProfilesView {
             .build();
         let outer = gtk::Box::new(gtk::Orientation::Vertical, 12);
 
-        let add_group = adw::PreferencesGroup::builder().title("导入订阅").build();
-        let name_row = adw::EntryRow::builder().title("名称（可选）").build();
-        let url_row = adw::EntryRow::builder().title("订阅链接 URL").build();
-        let flag_row = adw::ComboRow::builder()
-            .title("订阅格式")
-            .model(&gtk::StringList::new(&["Aerion", "Clash Meta"]))
-            .selected(0)
+        let quick_group = adw::PreferencesGroup::new();
+        let quick_url_row = adw::EntryRow::builder().title("订阅链接 URL").build();
+        let quick_import_btn = gtk::Button::with_label("导入");
+        quick_import_btn.add_css_class("suggested-action");
+        quick_import_btn.set_valign(gtk::Align::Center);
+        quick_url_row.add_suffix(&quick_import_btn);
+        let adv_entry_row = adw::ActionRow::builder()
+            .title("高级与本地导入")
+            .subtitle("自定义名称、订阅格式或本地 YAML 配置")
+            .activatable(true)
             .build();
-        let import_btn = gtk::Button::with_label("拉取并添加");
-        import_btn.add_css_class("suggested-action");
-        import_btn.set_valign(gtk::Align::Center);
-        url_row.add_suffix(&import_btn);
-        add_group.add(&name_row);
-        add_group.add(&flag_row);
-        add_group.add(&url_row);
-
-        let yaml_expander = gtk::Expander::new(Some("导入本地 YAML 配置"));
-        let yaml_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        yaml_box.set_margin_top(6);
-        let yaml_view = gtk::TextView::new();
-        yaml_view.set_monospace(true);
-        let yaml_scroll = gtk::ScrolledWindow::builder()
-            .min_content_height(120)
-            .child(&yaml_view)
-            .build();
-        yaml_scroll.add_css_class("card");
-        let add_yaml_btn = gtk::Button::with_label("保存本地 YAML");
-        add_yaml_btn.set_halign(gtk::Align::End);
-        yaml_box.append(&yaml_scroll);
-        yaml_box.append(&add_yaml_btn);
-        yaml_expander.set_child(Some(&yaml_box));
+        adv_entry_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+        quick_group.add(&quick_url_row);
+        quick_group.add(&adv_entry_row);
 
         let status_label = gtk::Label::new(None);
         status_label.set_xalign(0.0);
@@ -71,24 +57,109 @@ impl ProfilesView {
         status_label.set_visible(false);
 
         let list_box = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        outer.append(&add_group);
-        outer.append(&yaml_expander);
+        outer.append(&quick_group);
         outer.append(&status_label);
         outer.append(&list_box);
-        clamp.set_child(Some(&outer));
-        scroll.set_child(Some(&clamp));
+        main_clamp.set_child(Some(&outer));
+        main_scroll.set_child(Some(&main_clamp));
+        stack.add_named(&main_scroll, Some("root"));
+
+        let adv_vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let top_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        top_bar.set_margin_top(10);
+        top_bar.set_margin_bottom(4);
+        top_bar.set_margin_start(14);
+        top_bar.set_margin_end(14);
+        let back_btn = gtk::Button::new();
+        let back_inner = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        back_inner.append(&gtk::Image::from_icon_name("go-previous-symbolic"));
+        back_inner.append(&gtk::Label::new(Some("返回")));
+        back_btn.set_child(Some(&back_inner));
+        back_btn.add_css_class("flat");
+        {
+            let st = stack.clone();
+            back_btn.connect_clicked(move |_| {
+                st.set_visible_child_name("root");
+            });
+        }
+        let adv_title = gtk::Label::new(Some("高级与本地导入"));
+        adv_title.add_css_class("heading");
+        adv_title.set_valign(gtk::Align::Center);
+        top_bar.append(&back_btn);
+        top_bar.append(&adv_title);
+
+        let adv_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .build();
+        let adv_clamp = adw::Clamp::builder()
+            .maximum_size(760)
+            .margin_top(8)
+            .margin_bottom(20)
+            .margin_start(14)
+            .margin_end(14)
+            .build();
+        let adv_outer = gtk::Box::new(gtk::Orientation::Vertical, 12);
+
+        let remote_group = adw::PreferencesGroup::builder().title("远程订阅参数").build();
+        let name_row = adw::EntryRow::builder().title("备注名称（可选）").build();
+        let url_row = adw::EntryRow::builder().title("订阅链接 URL").build();
+        let flag_row = adw::ComboRow::builder()
+            .title("订阅格式")
+            .model(&gtk::StringList::new(&["Aerion", "Clash Meta"]))
+            .selected(0)
+            .build();
+        let import_btn = gtk::Button::with_label("拉取添加");
+        import_btn.add_css_class("suggested-action");
+        import_btn.set_valign(gtk::Align::Center);
+        url_row.add_suffix(&import_btn);
+        remote_group.add(&name_row);
+        remote_group.add(&flag_row);
+        remote_group.add(&url_row);
+
+        let local_group = adw::PreferencesGroup::builder().title("本地 YAML 配置").build();
+        let yaml_view = gtk::TextView::new();
+        yaml_view.set_monospace(true);
+        let yaml_scroll = gtk::ScrolledWindow::builder()
+            .min_content_height(180)
+            .child(&yaml_view)
+            .build();
+        yaml_scroll.add_css_class("card");
+        let add_yaml_btn = gtk::Button::with_label("保存本地配置");
+        add_yaml_btn.add_css_class("suggested-action");
+        add_yaml_btn.set_halign(gtk::Align::End);
+        add_yaml_btn.set_margin_top(8);
+        local_group.add(&yaml_scroll);
+        local_group.add(&add_yaml_btn);
+
+        adv_outer.append(&remote_group);
+        adv_outer.append(&local_group);
+        adv_clamp.set_child(Some(&adv_outer));
+        adv_scroll.set_child(Some(&adv_clamp));
+        adv_vbox.append(&top_bar);
+        adv_vbox.append(&adv_scroll);
+        stack.add_named(&adv_vbox, Some("advanced"));
+
+        {
+            let st = stack.clone();
+            let q_url = quick_url_row.clone();
+            let a_url = url_row.clone();
+            adv_entry_row.connect_activated(move |_| {
+                let typed = q_url.text().to_string();
+                if !typed.trim().is_empty() && a_url.text().trim().is_empty() {
+                    a_url.set_text(&typed);
+                }
+                st.set_visible_child_name("advanced");
+            });
+        }
 
         {
             let ctrl = controller.clone();
             let handle = rt.clone();
-            let nrow = name_row.clone();
-            let urow = url_row.clone();
-            let frow = flag_row;
+            let qrow = quick_url_row.clone();
             let slbl = status_label.clone();
-            import_btn.connect_clicked(move |btn| {
-                let name = nrow.text().to_string();
-                let url = urow.text().to_string();
-                let flag = if frow.selected() == 1 { "meta" } else { "aerion" };
+            quick_import_btn.connect_clicked(move |btn| {
+                let url = qrow.text().to_string();
                 if url.trim().is_empty() {
                     return;
                 }
@@ -97,19 +168,19 @@ impl ProfilesView {
                 let (tx, rx) = std::sync::mpsc::channel();
                 handle.spawn(async move {
                     let res = ctrl
-                        .add_remote_profile(&name, &url, flag, 60)
+                        .add_remote_profile("", &url, "aerion", 60)
                         .await
                         .map_err(|e| format!("{e:#}"));
                     let _ = tx.send(res);
                 });
                 let btn_c = btn.clone();
-                let urow_c = urow.clone();
+                let qrow_c = qrow.clone();
                 let slbl_c = slbl.clone();
                 gtk::glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
                     match rx.try_recv() {
                         Ok(Ok(_)) => {
                             btn_c.set_sensitive(true);
-                            urow_c.set_text("");
+                            qrow_c.set_text("");
                             slbl_c.set_visible(false);
                             gtk::glib::ControlFlow::Break
                         }
@@ -134,9 +205,69 @@ impl ProfilesView {
         {
             let ctrl = controller.clone();
             let handle = rt.clone();
+            let nrow = name_row.clone();
+            let urow = url_row.clone();
+            let frow = flag_row;
+            let slbl = status_label.clone();
+            let st = stack.clone();
+            import_btn.connect_clicked(move |btn| {
+                let name = nrow.text().to_string();
+                let url = urow.text().to_string();
+                let flag = if frow.selected() == 1 { "meta" } else { "aerion" };
+                if url.trim().is_empty() {
+                    return;
+                }
+                btn.set_sensitive(false);
+                let ctrl = ctrl.clone();
+                let (tx, rx) = std::sync::mpsc::channel();
+                handle.spawn(async move {
+                    let res = ctrl
+                        .add_remote_profile(&name, &url, flag, 60)
+                        .await
+                        .map_err(|e| format!("{e:#}"));
+                    let _ = tx.send(res);
+                });
+                let btn_c = btn.clone();
+                let nrow_c = nrow.clone();
+                let urow_c = urow.clone();
+                let slbl_c = slbl.clone();
+                let st_c = st.clone();
+                gtk::glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
+                    match rx.try_recv() {
+                        Ok(Ok(_)) => {
+                            btn_c.set_sensitive(true);
+                            nrow_c.set_text("");
+                            urow_c.set_text("");
+                            slbl_c.set_visible(false);
+                            st_c.set_visible_child_name("root");
+                            gtk::glib::ControlFlow::Break
+                        }
+                        Ok(Err(err)) => {
+                            btn_c.set_sensitive(true);
+                            slbl_c.set_text(&err);
+                            slbl_c.set_visible(true);
+                            st_c.set_visible_child_name("root");
+                            gtk::glib::ControlFlow::Break
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            gtk::glib::ControlFlow::Continue
+                        }
+                        Err(_) => {
+                            btn_c.set_sensitive(true);
+                            gtk::glib::ControlFlow::Break
+                        }
+                    }
+                });
+            });
+        }
+
+        {
+            let ctrl = controller.clone();
+            let handle = rt.clone();
             let nrow = name_row;
             let buf = yaml_view.buffer();
             let slbl = status_label.clone();
+            let st = stack.clone();
             add_yaml_btn.connect_clicked(move |_| {
                 let name = nrow.text().to_string();
                 let yaml = buf
@@ -156,16 +287,19 @@ impl ProfilesView {
                 });
                 let buf_c = buf.clone();
                 let slbl_c = slbl.clone();
+                let st_c = st.clone();
                 gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
                     match rx.try_recv() {
                         Ok(Ok(_)) => {
                             buf_c.set_text("");
                             slbl_c.set_visible(false);
+                            st_c.set_visible_child_name("root");
                             gtk::glib::ControlFlow::Break
                         }
                         Ok(Err(err)) => {
                             slbl_c.set_text(&err);
                             slbl_c.set_visible(true);
+                            st_c.set_visible_child_name("root");
                             gtk::glib::ControlFlow::Break
                         }
                         Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -178,13 +312,17 @@ impl ProfilesView {
         }
 
         Rc::new(Self {
-            root: scroll,
+            root: stack,
             list_box,
             status_label,
             last_sig: RefCell::new(String::new()),
             controller,
             rt,
         })
+    }
+
+    pub fn reset_to_root(&self) {
+        self.root.set_visible_child_name("root");
     }
 
     pub fn apply_snapshot(&self, snap: &EngineSnapshot) {

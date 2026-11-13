@@ -1,5 +1,6 @@
 package moe.telecom.neto.sdk
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -12,11 +13,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.json.JSONArray
@@ -28,7 +31,6 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.CheckboxPreference
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
@@ -46,160 +48,137 @@ fun NetoSettingsPane(
     extraFooterSlot: (@Composable () -> Unit)? = null,
 ) {
     val settings = snapshot.settings
-    var showAppRules by rememberSaveable { mutableStateOf(false) }
+    var subpage by rememberSaveable { mutableStateOf("root") }
     var showConnections by rememberSaveable { mutableStateOf(false) }
     var showRulesDialog by rememberSaveable { mutableStateOf(false) }
-    var showLogs by rememberSaveable { mutableStateOf(false) }
     val checkingConnectivity by client.checkingConnectivity.collectAsStateWithLifecycle()
     var customRouteDraft by rememberSaveable(settings.customRouteYaml) { mutableStateOf(settings.customRouteYaml) }
 
+    BackHandler(enabled = subpage != "root") {
+        subpage = "root"
+    }
+
     val themeModes = listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色")
     val dnsModes = listOf("virtual" to "虚拟 DNS", "over_tcp" to "TCP 转发", "direct" to "直连 DNS")
+    val dnsIdx = dnsModes.indexOfFirst { it.first == settings.vpnDnsMode }.coerceAtLeast(0)
 
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(top = 8.dp, bottom = 28.dp),
-        overscrollEffect = null,
-    ) {
-        if (extraHeaderSlot != null) {
-            item(key = "extra-header") {
-                extraHeaderSlot()
+    when (subpage) {
+        "app_rules" -> NetoAppRulesSubpage(
+            settings = settings,
+            installedApps = installedApps,
+            client = client,
+            modifier = modifier,
+            onBack = { subpage = "root" },
+        )
+
+        "dns_tun" -> LazyColumn(
+            modifier = modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp),
+            overscrollEffect = null,
+        ) {
+            item(key = "hdr") {
+                NetoSubpageHeader(title = "DNS 与 TUN 参数", onBack = { subpage = "root" })
             }
-        }
-
-        item(key = "general") {
-            SmallTitle("界面与分流")
-            NetoPreferenceCard {
-                val themeIdx = themeModes.indexOfFirst { it.first == settings.themeMode }.coerceAtLeast(0)
-                OverlayDropdownPreference(
-                    title = "外观主题",
-                    summary = themeModes[themeIdx].second,
-                    items = themeModes.map { it.second },
-                    selectedIndex = themeIdx,
-                    onSelectedIndexChange = { idx ->
-                        client.updateSettings(JSONObject().put("theme_mode", themeModes[idx].first))
-                    },
-                )
-                val appCount = if (settings.appRuleMode == "allow") settings.allowedApps.size else settings.excludedApps.size
-                ArrowPreference(
-                    title = "分应用代理",
-                    summary = if (appCount == 0) "默认接管全部应用" else "已选 $appCount 个应用 (${if (settings.appRuleMode == "allow") "仅代理" else "绕过"})",
-                    onClick = {
-                        client.loadInstalledAppsIfNeeded()
-                        showAppRules = true
-                    },
-                )
-            }
-        }
-
-        item(key = "network") {
-            SmallTitle("网络与 DNS")
-            NetoPreferenceCard {
-                NetoEditPreference(
-                    title = "本地混合端口",
-                    value = settings.mixedPort.toString(),
-                    onConfirm = { v ->
-                        v.toIntOrNull()?.takeIf { it in 1024..65535 }?.let {
-                            client.updateSettings(JSONObject().put("mixed_port", it), restartIfConnected = true)
-                        }
-                    },
-                )
-                SwitchPreference(
-                    title = "允许局域网连接",
-                    checked = settings.allowLan,
-                    onCheckedChange = { client.updateSettings(JSONObject().put("allow_lan", it), restartIfConnected = true) },
-                )
-                SwitchPreference(
-                    title = "启用 IPv6",
-                    checked = settings.ipv6Enabled,
-                    onCheckedChange = { client.updateSettings(JSONObject().put("ipv6_enabled", it), restartIfConnected = true) },
-                )
-                val dnsIdx = dnsModes.indexOfFirst { it.first == settings.vpnDnsMode }.coerceAtLeast(0)
-                OverlayDropdownPreference(
-                    title = "DNS 模式",
-                    summary = dnsModes[dnsIdx].second,
-                    items = dnsModes.map { it.second },
-                    selectedIndex = dnsIdx,
-                    onSelectedIndexChange = { idx ->
-                        client.updateSettings(JSONObject().put("vpn_dns_mode", dnsModes[idx].first), restartIfConnected = true)
-                    },
-                )
-                NetoEditPreference(
-                    title = "虚拟 DNS 地址池",
-                    value = settings.virtualDnsPool,
-                    onConfirm = { v ->
-                        if (v.isNotBlank()) {
-                            client.updateSettings(JSONObject().put("virtual_dns_pool", v), restartIfConnected = true)
-                        }
-                    },
-                )
-                NetoEditPreference(
-                    title = "节点解析 DoH",
-                    value = settings.nodeDns,
-                    onConfirm = { client.updateSettings(JSONObject().put("node_dns", it)) },
-                )
-                NetoEditPreference(
-                    title = "代理 DNS",
-                    value = settings.overseasDns,
-                    onConfirm = { client.updateSettings(JSONObject().put("overseas_dns", it), restartIfConnected = true) },
-                )
-                NetoEditPreference(
-                    title = "直连 DNS",
-                    value = settings.directDns,
-                    onConfirm = { client.updateSettings(JSONObject().put("direct_dns", it), restartIfConnected = true) },
-                )
-                NetoEditPreference(
-                    title = "连通测速地址",
-                    value = settings.nodeTestUrl,
-                    onConfirm = { client.updateSettings(JSONObject().put("node_test_url", it)) },
-                )
-            }
-        }
-
-        item(key = "rules") {
-            SmallTitle("自定义路由规则")
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp)
-                    .padding(bottom = 10.dp),
-                insideMargin = PaddingValues(14.dp),
-            ) {
-                TextField(
-                    value = customRouteDraft,
-                    onValueChange = { customRouteDraft = it },
-                    label = "留空则使用当前订阅规则（已加载 ${snapshot.ruleCount} 条）",
-                    useLabelAsPlaceholder = true,
-                    minLines = 4,
-                    maxLines = 8,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    Button(
-                        onClick = {
-                            client.updateSettings(JSONObject().put("custom_route_yaml", customRouteDraft), restartIfConnected = true)
+            item(key = "dns-card") {
+                NetoPreferenceCard {
+                    SwitchPreference(
+                        title = "启用 IPv6",
+                        checked = settings.ipv6Enabled,
+                        onCheckedChange = { client.updateSettings(JSONObject().put("ipv6_enabled", it), restartIfConnected = true) },
+                    )
+                    OverlayDropdownPreference(
+                        title = "DNS 模式",
+                        summary = dnsModes[dnsIdx].second,
+                        items = dnsModes.map { it.second },
+                        selectedIndex = dnsIdx,
+                        onSelectedIndexChange = { idx ->
+                            client.updateSettings(JSONObject().put("vpn_dns_mode", dnsModes[idx].first), restartIfConnected = true)
                         },
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColorsPrimary(),
-                    ) {
-                        Text("保存规则")
-                    }
-                    Button(
-                        onClick = {
-                            customRouteDraft = ""
-                            client.updateSettings(JSONObject().put("custom_route_yaml", ""), restartIfConnected = true)
+                    )
+                    NetoEditPreference(
+                        title = "虚拟 DNS 网段",
+                        value = settings.virtualDnsPool,
+                        onConfirm = { v ->
+                            if (v.isNotBlank()) {
+                                client.updateSettings(JSONObject().put("virtual_dns_pool", v), restartIfConnected = true)
+                            }
                         },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("恢复订阅默认")
+                    )
+                    NetoEditPreference(
+                        title = "连通测速地址",
+                        value = settings.nodeTestUrl,
+                        onConfirm = { client.updateSettings(JSONObject().put("node_test_url", it)) },
+                    )
+                    NetoEditPreference(
+                        title = "节点解析 DoH",
+                        value = settings.nodeDns,
+                        onConfirm = { client.updateSettings(JSONObject().put("node_dns", it)) },
+                    )
+                    NetoEditPreference(
+                        title = "代理 DNS",
+                        value = settings.overseasDns,
+                        onConfirm = { client.updateSettings(JSONObject().put("overseas_dns", it), restartIfConnected = true) },
+                    )
+                    NetoEditPreference(
+                        title = "直连 DNS",
+                        value = settings.directDns,
+                        onConfirm = { client.updateSettings(JSONObject().put("direct_dns", it), restartIfConnected = true) },
+                    )
+                }
+            }
+        }
+
+        "custom_route" -> LazyColumn(
+            modifier = modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp),
+            overscrollEffect = null,
+        ) {
+            item(key = "hdr") {
+                NetoSubpageHeader(title = "分流规则覆写", onBack = { subpage = "root" })
+            }
+            item(key = "route-card") {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp)
+                        .padding(bottom = 10.dp),
+                    insideMargin = PaddingValues(14.dp),
+                ) {
+                    TextField(
+                        value = customRouteDraft,
+                        onValueChange = { customRouteDraft = it },
+                        label = "留空则使用当前订阅规则（共 ${snapshot.ruleCount} 条）",
+                        useLabelAsPlaceholder = true,
+                        minLines = 10,
+                        maxLines = 20,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = {
+                                customRouteDraft = ""
+                                client.updateSettings(JSONObject().put("custom_route_yaml", ""), restartIfConnected = true)
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("恢复默认")
+                        }
+                        Button(
+                            onClick = {
+                                client.updateSettings(JSONObject().put("custom_route_yaml", customRouteDraft), restartIfConnected = true)
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColorsPrimary(),
+                        ) {
+                            Text("保存规则")
+                        }
                     }
                 }
             }
         }
 
-        item(key = "logs") {
-            SmallTitle("诊断")
+        "diagnostics" -> {
             val checkRes = snapshot.lastNetworkCheck
             val checkSummary = when {
                 checkingConnectivity -> "检测中..."
@@ -210,47 +189,134 @@ fun NetoSettingsPane(
                     listOf(ip, delays).filter { it.isNotBlank() }.joinToString(" | ")
                 }
             }
-            NetoPreferenceCard {
-                ArrowPreference(
-                    title = "活跃会话",
-                    summary = "并发 ${snapshot.telemetry.activeSessions} · ↑ ${formatNetoBytes(snapshot.telemetry.uploadBytes)} ↓ ${formatNetoBytes(snapshot.telemetry.downloadBytes)}",
-                    onClick = { showConnections = true },
-                )
-                ArrowPreference(
-                    title = "分流规则与匹配",
-                    summary = "共 ${snapshot.ruleCount} 条规则",
-                    onClick = { showRulesDialog = true },
-                )
-                ArrowPreference(
-                    title = "出口检测",
-                    summary = checkSummary,
-                    onClick = client::checkConnectivity,
-                )
-                ArrowPreference(
-                    title = "运行日志",
-                    summary = if (logs.isEmpty()) "无记录" else "${logs.size} 条记录",
-                    onClick = {
-                        client.refreshLogs()
-                        showLogs = true
-                    },
-                )
+            LazyColumn(
+                modifier = modifier.fillMaxSize(),
+                contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp),
+                overscrollEffect = null,
+            ) {
+                item(key = "hdr") {
+                    NetoSubpageHeader(title = "会话与路由诊断", onBack = { subpage = "root" })
+                }
+                item(key = "diag-card") {
+                    NetoPreferenceCard {
+                        ArrowPreference(
+                            title = "活跃会话",
+                            summary = "并发 ${snapshot.telemetry.activeSessions} · ↑ ${formatNetoBytes(snapshot.telemetry.uploadBytes)} ↓ ${formatNetoBytes(snapshot.telemetry.downloadBytes)}",
+                            onClick = { showConnections = true },
+                        )
+                        ArrowPreference(
+                            title = "分流规则与匹配测试",
+                            summary = "共 ${snapshot.ruleCount} 条规则",
+                            onClick = { showRulesDialog = true },
+                        )
+                        ArrowPreference(
+                            title = "出口连通检测",
+                            summary = checkSummary,
+                            onClick = client::checkConnectivity,
+                        )
+                    }
+                }
             }
         }
 
-        if (extraFooterSlot != null) {
-            item(key = "extra-footer") {
-                extraFooterSlot()
-            }
-        }
-    }
-
-    if (showAppRules) {
-        NetoAppRulesDialog(
-            settings = settings,
-            installedApps = installedApps,
+        "logs" -> NetoLogsSubpage(
+            logs = logs,
             client = client,
-            onDismiss = { showAppRules = false },
+            modifier = modifier,
+            onBack = { subpage = "root" },
         )
+
+        else -> LazyColumn(
+            modifier = modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = 8.dp, bottom = 28.dp),
+            overscrollEffect = null,
+        ) {
+            if (extraHeaderSlot != null) {
+                item(key = "extra-header") {
+                    extraHeaderSlot()
+                }
+            }
+
+            item(key = "general") {
+                SmallTitle("常规")
+                NetoPreferenceCard {
+                    val themeIdx = themeModes.indexOfFirst { it.first == settings.themeMode }.coerceAtLeast(0)
+                    OverlayDropdownPreference(
+                        title = "外观主题",
+                        summary = themeModes[themeIdx].second,
+                        items = themeModes.map { it.second },
+                        selectedIndex = themeIdx,
+                        onSelectedIndexChange = { idx ->
+                            client.updateSettings(JSONObject().put("theme_mode", themeModes[idx].first))
+                        },
+                    )
+                    val appCount = if (settings.appRuleMode == "allow") settings.allowedApps.size else settings.excludedApps.size
+                    ArrowPreference(
+                        title = "分应用代理",
+                        summary = if (appCount == 0) "默认接管全部应用" else "已选 $appCount 个应用 (${if (settings.appRuleMode == "allow") "仅代理" else "绕过"})",
+                        onClick = {
+                            client.loadInstalledAppsIfNeeded()
+                            subpage = "app_rules"
+                        },
+                    )
+                }
+            }
+
+            item(key = "access") {
+                SmallTitle("网络接入")
+                NetoPreferenceCard {
+                    NetoEditPreference(
+                        title = "本地混合端口",
+                        value = settings.mixedPort.toString(),
+                        onConfirm = { v ->
+                            v.toIntOrNull()?.takeIf { it in 1024..65535 }?.let {
+                                client.updateSettings(JSONObject().put("mixed_port", it), restartIfConnected = true)
+                            }
+                        },
+                    )
+                    SwitchPreference(
+                        title = "允许局域网连接",
+                        checked = settings.allowLan,
+                        onCheckedChange = { client.updateSettings(JSONObject().put("allow_lan", it), restartIfConnected = true) },
+                    )
+                }
+            }
+
+            item(key = "advanced") {
+                SmallTitle("高级与诊断")
+                NetoPreferenceCard {
+                    ArrowPreference(
+                        title = "DNS 与 TUN 参数",
+                        summary = "${dnsModes[dnsIdx].second} · IPv6 ${if (settings.ipv6Enabled) "开" else "关"}",
+                        onClick = { subpage = "dns_tun" },
+                    )
+                    ArrowPreference(
+                        title = "分流规则覆写",
+                        summary = if (settings.customRouteYaml.isBlank()) "跟随订阅规则（共 ${snapshot.ruleCount} 条）" else "已启用自定义规则",
+                        onClick = { subpage = "custom_route" },
+                    )
+                    ArrowPreference(
+                        title = "会话与路由诊断",
+                        summary = "并发 ${snapshot.telemetry.activeSessions} · 规则匹配与出口检测",
+                        onClick = { subpage = "diagnostics" },
+                    )
+                    ArrowPreference(
+                        title = "运行日志",
+                        summary = if (logs.isEmpty()) "查看运行日志" else "最近 ${logs.size} 条记录",
+                        onClick = {
+                            client.refreshLogs()
+                            subpage = "logs"
+                        },
+                    )
+                }
+            }
+
+            if (extraFooterSlot != null) {
+                item(key = "extra-footer") {
+                    extraFooterSlot()
+                }
+            }
+        }
     }
 
     if (showConnections) {
@@ -266,22 +332,15 @@ fun NetoSettingsPane(
             onDismiss = { showRulesDialog = false },
         )
     }
-
-    if (showLogs) {
-        NetoLogsDialog(
-            logs = logs,
-            client = client,
-            onDismiss = { showLogs = false },
-        )
-    }
 }
 
 @Composable
-private fun NetoAppRulesDialog(
+private fun NetoAppRulesSubpage(
     settings: NetoSettings,
     installedApps: List<InstalledAppEntry>,
     client: NetoControllerClient,
-    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    onBack: () -> Unit,
 ) {
     var search by rememberSaveable { mutableStateOf("") }
     var showSystem by rememberSaveable { mutableStateOf(false) }
@@ -290,12 +349,9 @@ private fun NetoAppRulesDialog(
         (showSystem || !it.systemApp) &&
             (search.isBlank() || it.label.contains(search, ignoreCase = true) || it.packageName.contains(search, ignoreCase = true))
     }
-    OverlayDialog(
-        show = true,
-        title = "分应用代理",
-        onDismissRequest = onDismiss,
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+    Column(modifier = modifier.fillMaxSize()) {
+        NetoSubpageHeader(title = "分应用代理", onBack = onBack)
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 listOf("exclude" to "绕过选中", "allow" to "仅代理选中").forEach { (m, label) ->
                     Button(
@@ -311,19 +367,28 @@ private fun NetoAppRulesDialog(
             TextField(
                 value = search,
                 onValueChange = { search = it },
-                label = "搜索应用",
+                label = "搜索应用名称或包名",
                 useLabelAsPlaceholder = true,
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
+            Spacer(Modifier.height(6.dp))
+        }
+        NetoPreferenceCard {
             SwitchPreference(
                 title = "显示系统应用",
                 checked = showSystem,
                 onCheckedChange = { showSystem = it },
             )
-            LazyColumn(modifier = Modifier.fillMaxWidth().height(260.dp)) {
-                items(filtered, key = { it.packageName }) { app ->
-                    val checked = selectedSet.contains(app.packageName)
+        }
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+            overscrollEffect = null,
+        ) {
+            items(filtered, key = { it.packageName }) { app ->
+                val checked = selectedSet.contains(app.packageName)
+                Card(modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
                     CheckboxPreference(
                         title = app.label,
                         summary = app.packageName,
@@ -338,9 +403,76 @@ private fun NetoAppRulesDialog(
                     )
                 }
             }
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                TextButton(text = "完成", onClick = onDismiss, colors = ButtonDefaults.textButtonColorsPrimary())
+        }
+    }
+}
+
+@Composable
+private fun NetoLogsSubpage(
+    logs: List<NetoLogEntry>,
+    client: NetoControllerClient,
+    modifier: Modifier = Modifier,
+    onBack: () -> Unit,
+) {
+    var level by rememberSaveable { mutableStateOf("all") }
+    var keyword by rememberSaveable { mutableStateOf("") }
+
+    LaunchedEffect(level, keyword) {
+        client.refreshLogs(level = level, filter = keyword.trim(), limit = 200)
+    }
+
+    Column(modifier = modifier.fillMaxSize()) {
+        NetoSubpageHeader(
+            title = "运行日志",
+            onBack = onBack,
+            trailing = {
+                TextButton(text = "清空", onClick = client::clearLogs)
+            },
+        )
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                listOf("all" to "全部", "info" to "INFO", "warn" to "WARN", "error" to "ERR").forEach { (k, label) ->
+                    Button(
+                        onClick = { level = k },
+                        modifier = Modifier.weight(1f),
+                        colors = if (level == k) ButtonDefaults.buttonColorsPrimary() else ButtonDefaults.buttonColors(),
+                    ) {
+                        Text(label)
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            TextField(
+                value = keyword,
+                onValueChange = { keyword = it },
+                label = "筛选日志内容",
+                useLabelAsPlaceholder = true,
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(horizontal = 12.dp)
+                .padding(bottom = 14.dp),
+            insideMargin = PaddingValues(12.dp),
+        ) {
+            if (logs.isEmpty()) {
+                Text("暂无日志", color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            } else {
+                LazyColumn(modifier = Modifier.fillMaxSize(), overscrollEffect = null) {
+                    items(logs.takeLast(160)) { entry ->
+                        Text(
+                            "[${entry.level.uppercase()}] ${entry.message}",
+                            style = MiuixTheme.textStyles.body2,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.padding(vertical = 2.dp),
+                        )
+                    }
+                }
             }
         }
     }

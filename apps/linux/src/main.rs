@@ -126,8 +126,16 @@ fn main() -> anyhow::Result<()> {
 
         {
             let title_lbl = header_title.clone();
+            let pv = profiles_view.clone();
+            let sv = settings_view.clone();
             stack.connect_visible_child_name_notify(move |s| {
-                let text = match s.visible_child_name().as_deref() {
+                let name = s.visible_child_name();
+                if name.as_deref() == Some("profiles") {
+                    pv.reset_to_root();
+                } else if name.as_deref() == Some("settings") {
+                    sv.reset_to_root();
+                }
+                let text = match name.as_deref() {
                     Some("connect") | None => "",
                     Some("dashboard") => "主页",
                     Some("nodes") => "节点",
@@ -142,6 +150,7 @@ fn main() -> anyhow::Result<()> {
 
         let window = adw::ApplicationWindow::builder()
             .application(app)
+            .icon_name(app_id)
             .default_width(820)
             .default_height(600)
             .content(&toolbar_view)

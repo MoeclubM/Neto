@@ -100,7 +100,7 @@ jobs:
           if (-not (Test-Path $iscc)) {
             choco install innosetup --no-progress --yes
           }
-          & $iscc '/DMyAppVersion=0.0.3' '/DOutputBaseFilename=Neto-windows-x64-setup' 'apps/windows/installer/Neto.iss'
+          & $iscc '/DMyAppVersion=0.0.4' '/DOutputBaseFilename=Neto-windows-x64-setup' 'apps/windows/installer/Neto.iss'
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
           if (-not (Test-Path 'dist/Neto-windows-x64-setup.exe')) { throw 'Neto-windows-x64-setup.exe missing' }
       - name: Upload Windows installer
@@ -139,13 +139,14 @@ jobs:
         run: |
           cargo build --release -p neto-linux
           pkg_root="dist/pkg-neto_${{ matrix.arch }}"
-          mkdir -p "$pkg_root/DEBIAN" "$pkg_root/usr/bin" "$pkg_root/usr/share/applications"
+          mkdir -p "$pkg_root/DEBIAN" "$pkg_root/usr/bin" "$pkg_root/usr/share/applications" "$pkg_root/usr/share/icons/hicolor/scalable/apps"
           cp target/release/neto "$pkg_root/usr/bin/neto"
           chmod 0755 "$pkg_root/usr/bin/neto"
           cp apps/linux/data/io.github.moeclubm.Neto.desktop "$pkg_root/usr/share/applications/"
+          cp apps/linux/data/io.github.moeclubm.Neto.svg "$pkg_root/usr/share/icons/hicolor/scalable/apps/"
           cat > "$pkg_root/DEBIAN/control" <<EOF
           Package: neto
-          Version: 0.0.3
+          Version: 0.0.4
           Section: net
           Priority: optional
           Architecture: ${{ matrix.arch }}
@@ -154,11 +155,11 @@ jobs:
           Description: Neto native subscription and proxy client for Linux Wayland
           EOF
           sed -i 's/^          //' "$pkg_root/DEBIAN/control"
-          dpkg-deb --root-owner-group --build "$pkg_root" "dist/neto_0.0.3_${{ matrix.arch }}.deb"
+          dpkg-deb --root-owner-group --build "$pkg_root" "dist/neto_0.0.4_${{ matrix.arch }}.deb"
       - name: Upload Linux deb
         uses: actions/upload-artifact@v7
         with:
           name: neto-linux-${{ matrix.arch }}
           archive: false
-          path: dist/neto_0.0.3_${{ matrix.arch }}.deb
+          path: dist/neto_0.0.4_${{ matrix.arch }}.deb
           if-no-files-found: error

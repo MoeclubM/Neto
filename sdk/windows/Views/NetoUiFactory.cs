@@ -114,6 +114,110 @@ public static class NetoUiFactory
         return grid;
     }
 
+    public static Grid CreateSettingRow(string title, FrameworkElement control, string? subtitle = null)
+    {
+        var grid = new Grid { ColumnSpacing = 12, MinHeight = 32 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var left = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        left.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 13,
+        });
+        if (!string.IsNullOrEmpty(subtitle))
+        {
+            left.Children.Add(new TextBlock
+            {
+                Text = subtitle,
+                FontSize = 11,
+                Foreground = BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+            });
+        }
+        control.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(control, 1);
+        grid.Children.Add(left);
+        grid.Children.Add(control);
+        return grid;
+    }
+
+    public static Button CreateNavEntryRow(string title, TextBlock summaryBlock, Action onClick)
+    {
+        var grid = new Grid { ColumnSpacing = 12 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var left = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        left.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+        });
+        summaryBlock.FontSize = 12;
+        summaryBlock.TextTrimming = TextTrimming.CharacterEllipsis;
+        summaryBlock.Foreground = BrushResource("TextFillColorSecondaryBrush", Colors.Gray);
+        left.Children.Add(summaryBlock);
+        var chevron = new FontIcon
+        {
+            Glyph = "\uE76C",
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+        };
+        Grid.SetColumn(chevron, 1);
+        grid.Children.Add(left);
+        grid.Children.Add(chevron);
+
+        var btn = new Button
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(14, 9, 14, 9),
+            Content = grid,
+        };
+        btn.Click += (_, _) => onClick();
+        return btn;
+    }
+
+    public static Grid CreateSubpageHeader(string title, Action onBack, FrameworkElement? rightElement = null)
+    {
+        var grid = new Grid { ColumnSpacing = 10, Margin = new Thickness(0, 0, 0, 2) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var backInner = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        backInner.Children.Add(new FontIcon { Glyph = "\uE72B", FontSize = 12, VerticalAlignment = VerticalAlignment.Center });
+        backInner.Children.Add(new TextBlock { Text = "返回", VerticalAlignment = VerticalAlignment.Center });
+        var backBtn = new Button
+        {
+            Content = backInner,
+            Padding = new Thickness(10, 5, 10, 5),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        backBtn.Click += (_, _) => onBack();
+
+        var titleTb = new TextBlock
+        {
+            Text = title,
+            FontSize = 15,
+            FontWeight = FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        Grid.SetColumn(titleTb, 1);
+        grid.Children.Add(backBtn);
+        grid.Children.Add(titleTb);
+        if (rightElement != null)
+        {
+            rightElement.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(rightElement, 2);
+            grid.Children.Add(rightElement);
+        }
+        return grid;
+    }
+
     public static Border CreateTagBadge(string text, Color? tint = null)
     {
         var fg = tint.HasValue

@@ -2,7 +2,7 @@
 Type=Application
 Name=Neto
 Exec=neto
-Icon=network-vpn
+Icon=io.github.moeclubm.Neto
 Terminal=false
 Categories=Network;
 StartupWMClass=io.github.moeclubm.Neto

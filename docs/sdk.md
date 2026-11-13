@@ -14,7 +14,7 @@ includeBuild("deps/neto") {
 }
 ```
 
-2. 在应用模块依赖 `implementation("moe.telecom.neto:sdk:0.0.3")`，即可直接复用：
+2. 在应用模块依赖 `implementation("moe.telecom.neto:sdk:0.0.4")`，即可直接复用：
    - `NetoControllerClient`（包含 `upsertManagedProfile` 商业订阅注入接口）
    - `NetoVpnService`（通过 Manifest Merge 自动注册）
    - `NetoConnectPane`（支持传入 `blockedContent` 商业套餐到期提示槽位）

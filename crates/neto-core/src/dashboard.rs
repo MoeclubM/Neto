@@ -4,29 +4,29 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum DashboardWidgetId {
     NetworkSpeed,
+    TrafficUsage,
+    ActiveConnections,
+    ExitCheck,
+    LatencyProbe,
+    RuntimeInfo,
     OutboundMode,
     CurrentOutbound,
     NetworkTakeover,
-    ActiveConnections,
-    ExitCheck,
-    TrafficUsage,
     ProfilesSummary,
-    LatencyProbe,
-    RuntimeInfo,
 }
 
 impl DashboardWidgetId {
     pub const ALL: &'static [DashboardWidgetId] = &[
         Self::NetworkSpeed,
+        Self::TrafficUsage,
+        Self::ActiveConnections,
+        Self::ExitCheck,
+        Self::LatencyProbe,
+        Self::RuntimeInfo,
         Self::OutboundMode,
         Self::CurrentOutbound,
         Self::NetworkTakeover,
-        Self::ActiveConnections,
-        Self::ExitCheck,
-        Self::TrafficUsage,
         Self::ProfilesSummary,
-        Self::LatencyProbe,
-        Self::RuntimeInfo,
     ];
 
     pub fn key(self) -> &'static str {
@@ -58,6 +58,18 @@ impl DashboardWidgetId {
             Self::RuntimeInfo => "运行信息",
         }
     }
+
+    pub fn default_enabled(self) -> bool {
+        matches!(
+            self,
+            Self::NetworkSpeed
+                | Self::TrafficUsage
+                | Self::ActiveConnections
+                | Self::ExitCheck
+                | Self::LatencyProbe
+                | Self::RuntimeInfo
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +82,10 @@ pub fn default_dashboard_widgets() -> Vec<DashboardWidgetItem> {
     DashboardWidgetId::ALL
         .iter()
         .copied()
-        .map(|id| DashboardWidgetItem { id, enabled: true })
+        .map(|id| DashboardWidgetItem {
+            id,
+            enabled: id.default_enabled(),
+        })
         .collect()
 }
 
@@ -83,7 +98,10 @@ pub fn normalize_dashboard_widgets(items: &[DashboardWidgetItem]) -> Vec<Dashboa
     }
     for &id in DashboardWidgetId::ALL {
         if !out.iter().any(|existing| existing.id == id) {
-            out.push(DashboardWidgetItem { id, enabled: true });
+            out.push(DashboardWidgetItem {
+                id,
+                enabled: id.default_enabled(),
+            });
         }
     }
     out

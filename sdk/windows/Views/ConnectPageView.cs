@@ -21,6 +21,7 @@ public sealed class ConnectPageView
     private readonly TextBlock _sessionBadgeText;
     private readonly TextBlock _durationLabel;
     private readonly TextBlock _endpointLabel;
+    private readonly TextBlock _liveSpeedLabel;
     private readonly Button _connectButton;
     private readonly Button _probeButton;
     private readonly TextBlock _nodeNameLabel;
@@ -34,8 +35,6 @@ public sealed class ConnectPageView
     private readonly ToggleSwitch _sysProxySwitch;
     private readonly ToggleSwitch _tunSwitch;
     private readonly Button _elevateBtn;
-    private readonly NetoDualSeriesChart _speedChart;
-    private readonly NetoDualSeriesChart _latencyChart;
     private readonly Border _errorCard;
     private readonly TextBlock _errorLabel;
     private bool _updating;
@@ -47,7 +46,7 @@ public sealed class ConnectPageView
 
         var outer = new StackPanel
         {
-            MaxWidth = 720,
+            MaxWidth = 680,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Center,
             Spacing = 10,
@@ -98,7 +97,7 @@ public sealed class ConnectPageView
         _durationLabel = new TextBlock
         {
             Text = "00:00:00",
-            FontSize = 24,
+            FontSize = 26,
             FontFamily = new FontFamily("Consolas"),
         };
         _endpointLabel = new TextBlock
@@ -106,15 +105,23 @@ public sealed class ConnectPageView
             FontSize = 12,
             Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
         };
+        _liveSpeedLabel = new TextBlock
+        {
+            FontSize = 12,
+            FontFamily = new FontFamily("Consolas"),
+            Visibility = Visibility.Collapsed,
+            Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+        };
         var heroLeft = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
         heroLeft.Children.Add(statusLine);
         heroLeft.Children.Add(_durationLabel);
         heroLeft.Children.Add(_endpointLabel);
+        heroLeft.Children.Add(_liveSpeedLabel);
 
         _connectButton = new Button
         {
             Content = "连接",
-            MinWidth = 132,
+            MinWidth = 136,
             Height = 38,
             HorizontalAlignment = HorizontalAlignment.Stretch,
         };
@@ -122,7 +129,7 @@ public sealed class ConnectPageView
 
         _probeButton = new Button
         {
-            Content = "测速",
+            Content = "延迟检测",
             HorizontalAlignment = HorizontalAlignment.Stretch,
             Visibility = Visibility.Collapsed,
         };
@@ -139,7 +146,7 @@ public sealed class ConnectPageView
         Grid.SetColumn(heroRight, 1);
         heroGrid.Children.Add(heroLeft);
         heroGrid.Children.Add(heroRight);
-        _mainContent.Children.Add(NetoUiFactory.CreateCard(heroGrid, new Thickness(16, 14, 16, 14)));
+        _mainContent.Children.Add(NetoUiFactory.CreateCard(heroGrid, new Thickness(18, 16, 18, 16)));
 
         var contextGrid = new Grid { ColumnSpacing = 10 };
         contextGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -173,7 +180,8 @@ public sealed class ConnectPageView
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            Padding = new Thickness(14, 10, 14, 10),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(14, 11, 14, 11),
             Content = nodeGrid,
         };
         nodeBtn.Click += (_, _) => onOpenNodes();
@@ -215,7 +223,8 @@ public sealed class ConnectPageView
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            Padding = new Thickness(14, 10, 14, 10),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(14, 11, 14, 11),
             IsEnabled = onOpenProfiles != null,
             Content = profBtnContent,
         };
@@ -224,6 +233,7 @@ public sealed class ConnectPageView
         {
             Content = new FontIcon { Glyph = "\uE72C", FontSize = 13 },
             VerticalAlignment = VerticalAlignment.Stretch,
+            CornerRadius = new CornerRadius(8),
             Margin = new Thickness(6, 0, 0, 0),
             Visibility = Visibility.Collapsed,
         };
@@ -301,16 +311,6 @@ public sealed class ConnectPageView
         controlsGrid.Children.Add(takeoverCard);
         _mainContent.Children.Add(controlsGrid);
 
-        var chartsRow = new Grid { ColumnSpacing = 10 };
-        chartsRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        chartsRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        _speedChart = new NetoDualSeriesChart(Color.FromArgb(255, 46, 184, 128), Color.FromArgb(255, 56, 132, 235), "实时吞吐");
-        _latencyChart = new NetoDualSeriesChart(Color.FromArgb(255, 56, 132, 235), null, "连通延迟");
-        Grid.SetColumn(_latencyChart.Root, 1);
-        chartsRow.Children.Add(_speedChart.Root);
-        chartsRow.Children.Add(_latencyChart.Root);
-        _mainContent.Children.Add(chartsRow);
-
         _errorLabel = new TextBlock
         {
             FontSize = 12,
@@ -363,17 +363,21 @@ public sealed class ConnectPageView
             _sessionBadge.Visibility = Visibility.Visible;
             _sessionBadgeText.Text = conn.SessionKind switch
             {
-                "tun" => "TUN 全局网卡",
+                "tun" => "TUN 接管",
                 "route" => "规则分流",
                 _ => "代理通道",
             };
             var addr = string.IsNullOrEmpty(conn.HttpProxyAddr) ? $"127.0.0.1:{snap.Settings.MixedPort}" : conn.HttpProxyAddr;
-            _endpointLabel.Text = $"本地混合端口 {addr}" + (conn.SystemProxyActive ? " · 系统代理已启用" : "");
+            _endpointLabel.Text = $"本地监听 {addr}" + (conn.SystemProxyActive ? " · 系统代理已开启" : "");
+            var latPart = snap.Telemetry.LatencyMs.HasValue ? $" · {snap.Telemetry.LatencyMs.Value} ms" : "";
+            _liveSpeedLabel.Text = $"↑ {NetoFormat.FormatSpeed(snap.Telemetry.UploadSpeedBps)}  ↓ {NetoFormat.FormatSpeed(snap.Telemetry.DownloadSpeedBps)}{latPart}";
+            _liveSpeedLabel.Visibility = Visibility.Visible;
         }
         else
         {
             _sessionBadge.Visibility = Visibility.Collapsed;
-            _endpointLabel.Text = $"预设混合端口 127.0.0.1:{snap.Settings.MixedPort}";
+            _endpointLabel.Text = $"本地监听端口 127.0.0.1:{snap.Settings.MixedPort}";
+            _liveSpeedLabel.Visibility = Visibility.Collapsed;
         }
 
         var sel = snap.SelectedNode;
@@ -400,7 +404,7 @@ public sealed class ConnectPageView
         {
             _profileNameLabel.Text = prof.Name;
             _profileMetaLabel.Text = prof.TotalBytes > 0
-                ? $"{prof.NodeCount} 节点 · 已用 {NetoFormat.FormatBytes(prof.UsedBytes)} / {NetoFormat.FormatBytes(prof.TotalBytes)}"
+                ? $"{prof.NodeCount} 节点 · {NetoFormat.FormatBytes(prof.UsedBytes)} / {NetoFormat.FormatBytes(prof.TotalBytes)}"
                 : $"{prof.NodeCount} 节点 · {prof.RuleCount} 规则";
             _refreshProfileBtn.Visibility = !string.IsNullOrWhiteSpace(prof.Url) ? Visibility.Visible : Visibility.Collapsed;
         }
@@ -418,17 +422,6 @@ public sealed class ConnectPageView
         _sysProxySwitch.IsOn = snap.Settings.SystemProxyEnabled;
         _tunSwitch.IsOn = snap.Settings.TunEnabled;
         _elevateBtn.Visibility = !conn.CanUseTun && _onRequestElevation != null ? Visibility.Visible : Visibility.Collapsed;
-
-        _speedChart.Update(
-            $"↑ {NetoFormat.FormatSpeed(snap.Telemetry.UploadSpeedBps)}  ↓ {NetoFormat.FormatSpeed(snap.Telemetry.DownloadSpeedBps)}",
-            snap.Telemetry.UploadHistory.Select(v => (double)v).ToList(),
-            snap.Telemetry.DownloadHistory.Select(v => (double)v).ToList()
-        );
-        var validLat = snap.Telemetry.LatencyHistory.Where(v => v >= 0).Select(v => (double)v).ToList();
-        _latencyChart.Update(
-            snap.Telemetry.LatencyMs.HasValue ? $"{snap.Telemetry.LatencyMs.Value} ms" : "- ms",
-            validLat
-        );
 
         var err = actionError ?? conn.LastError;
         if (!string.IsNullOrWhiteSpace(err))

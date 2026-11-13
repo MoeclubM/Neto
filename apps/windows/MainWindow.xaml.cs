@@ -60,6 +60,9 @@ public sealed partial class MainWindow : Window
         _profilesView = new ProfilesPageView(_client, _hwnd);
         _settingsView = new SettingsPageView(_client, ApplyThemeMode, RequestElevation);
 
+        NavProfilesItem.Tapped += (_, _) => _profilesView.ResetToRoot();
+        NavSettingsItem.Tapped += (_, _) => _settingsView.ResetToRoot();
+
         ContentHost.Children.Add(_connectView.Root);
         ContentHost.Children.Add(_dashboardView.Root);
         ContentHost.Children.Add(_nodesView.Root);
@@ -105,7 +108,7 @@ public sealed partial class MainWindow : Window
         _client.SnapshotChanged += ApplyAllViews;
         var initialTab = Environment.GetCommandLineArgs()
             .FirstOrDefault(a => a.StartsWith("--tab=", StringComparison.OrdinalIgnoreCase))?[6..]?.ToLowerInvariant() ?? "connect";
-        SwitchTab(initialTab);
+        SwitchTab(initialTab); var initialSub = Environment.GetCommandLineArgs().FirstOrDefault(a => a.StartsWith("--subpage=", StringComparison.OrdinalIgnoreCase))?[10..]?.ToLowerInvariant(); if (!string.IsNullOrEmpty(initialSub)) { if (initialTab == "settings") _settingsView.OpenSubpage(initialSub); else if (initialTab == "profiles") _profilesView.OpenSubpage(initialSub); }
         ApplyAllViews(_client.Snapshot);
 
         StartedHidden = (startMinimized || _client.Snapshot.Settings.SilentStart) && !isRelaunchElevated;
@@ -157,6 +160,9 @@ public sealed partial class MainWindow : Window
             _ => NavConnectItem,
         };
         _syncingNav = false;
+
+        if (tab == "profiles") _profilesView.ResetToRoot();
+        if (tab == "settings") _settingsView.ResetToRoot();
 
         if (tab == "connect")
         {

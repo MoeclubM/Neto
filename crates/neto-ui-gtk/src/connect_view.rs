@@ -18,6 +18,7 @@ pub struct ConnectView {
     mode_rule_btn: gtk::ToggleButton,
     mode_global_btn: gtk::ToggleButton,
     mode_direct_btn: gtk::ToggleButton,
+    metrics_grid: gtk::Grid,
     up_speed_label: gtk::Label,
     down_speed_label: gtk::Label,
     session_total_label: gtk::Label,
@@ -106,6 +107,7 @@ impl ConnectView {
         metrics_grid.set_column_homogeneous(true);
         metrics_grid.set_column_spacing(8);
         metrics_grid.set_row_spacing(8);
+        metrics_grid.set_visible(false);
 
         let up_speed_label = gtk::Label::new(Some("↑ 0 B/s"));
         up_speed_label.add_css_class("monospace");
@@ -174,8 +176,8 @@ impl ConnectView {
         root.append(&toggle_button);
         root.append(&node_btn);
         root.append(&mode_box);
-        root.append(&metrics_grid);
         root.append(&takeover_box);
+        root.append(&metrics_grid);
         root.append(&error_label);
 
         {
@@ -245,6 +247,7 @@ impl ConnectView {
             mode_rule_btn,
             mode_global_btn,
             mode_direct_btn,
+            metrics_grid,
             up_speed_label,
             down_speed_label,
             session_total_label,
@@ -261,6 +264,7 @@ impl ConnectView {
             self.status_label.set_text("连接中");
             self.toggle_button.set_label("连接中");
             self.toggle_button.set_sensitive(false);
+            self.metrics_grid.set_visible(false);
         } else if snap.connection.connected {
             self.status_label.set_text("已连接");
             self.toggle_button.set_label("断开");
@@ -271,6 +275,7 @@ impl ConnectView {
             self.status_dot.add_css_class("neto-dot-active");
             let elapsed = telemetry::now_ms().saturating_sub(snap.connection.connected_at_ms);
             self.duration_label.set_text(&format_duration_ms(elapsed));
+            self.metrics_grid.set_visible(true);
         } else {
             self.status_label.set_text("未连接");
             self.toggle_button.set_label("连接");
@@ -280,6 +285,7 @@ impl ConnectView {
             self.status_dot.remove_css_class("neto-dot-active");
             self.status_dot.add_css_class("neto-dot-idle");
             self.duration_label.set_text("00:00:00");
+            self.metrics_grid.set_visible(false);
         }
 
         let selected_node = snap
@@ -287,7 +293,10 @@ impl ConnectView {
             .iter()
             .find(|n| n.index == snap.selected_node_index)
             .or_else(|| snap.nodes.first());
-        if let Some(node) = selected_node {
+        if snap.settings.routing_mode == RoutingMode::Direct {
+            self.node_button_label.set_text("DIRECT");
+            self.node_meta_label.set_text("直连出站");
+        } else if let Some(node) = selected_node {
             self.node_button_label.set_text(&node.name);
             let meta = match node.latency_ms {
                 Some(ms) => format!("{} · {ms} ms", node.protocol_label),
@@ -305,15 +314,17 @@ impl ConnectView {
             RoutingMode::Direct => self.mode_direct_btn.set_active(true),
         }
 
-        self.up_speed_label
-            .set_text(&format!("↑ {}", format_speed(snap.telemetry.upload_speed_bps)));
-        self.down_speed_label
-            .set_text(&format!("↓ {}", format_speed(snap.telemetry.download_speed_bps)));
-        self.session_total_label.set_text(&format_bytes(
-            snap.telemetry
-                .upload_bytes
-                .saturating_add(snap.telemetry.download_bytes),
-        ));
+        if snap.connection.connected {
+            self.up_speed_label
+                .set_text(&format!("↑ {}", format_speed(snap.telemetry.upload_speed_bps)));
+            self.down_speed_label
+                .set_text(&format!("↓ {}", format_speed(snap.telemetry.download_speed_bps)));
+            self.session_total_label.set_text(&format_bytes(
+                snap.telemetry
+                    .upload_bytes
+                    .saturating_add(snap.telemetry.download_bytes),
+            ));
+        }
 
         if self.sys_proxy_switch.is_active() != snap.settings.system_proxy_enabled {
             self.sys_proxy_switch

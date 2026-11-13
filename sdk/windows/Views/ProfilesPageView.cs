@@ -12,18 +12,24 @@ public sealed class ProfilesPageView
     public ScrollViewer Root { get; }
     private readonly NetoClient _client;
     private readonly IntPtr _ownerHwnd;
-    private readonly TextBox _nameBox;
-    private readonly TextBox _urlBox;
+    private readonly StackPanel _rootPane;
+    private readonly StackPanel _subPane;
+    private readonly StackPanel _advImportPane;
+    private readonly StackPanel _editPane;
+    private readonly TextBox _quickUrlBox;
+    private readonly Button _quickImportBtn;
+    private readonly TextBox _advNameBox;
+    private readonly TextBox _advUrlBox;
     private readonly ComboBox _flagCombo;
     private readonly ComboBox _autoUpdateCombo;
-    private readonly Button _importBtn;
+    private readonly Button _advImportBtn;
+    private readonly TextBox _localNameBox;
     private readonly TextBox _yamlBox;
     private readonly Button _saveYamlBtn;
     private readonly Border _errCard;
     private readonly TextBlock _errLabel;
     private readonly Button _refreshAllBtn;
-    private readonly Border _editCard;
-    private readonly TextBlock _editCardTitle;
+    private readonly TextBlock _editSubpageTitle;
     private readonly TextBox _editNameBox;
     private readonly TextBox _editUrlBox;
     private readonly ComboBox _editFlagCombo;
@@ -61,72 +67,127 @@ public sealed class ProfilesPageView
             Spacing = 10,
             Padding = new Thickness(18, 8, 18, 24),
         };
+        _rootPane = new StackPanel { Spacing = 10 };
+        _subPane = new StackPanel { Spacing = 10, Visibility = Visibility.Collapsed };
 
-        var addStack = new StackPanel { Spacing = 8 };
-        addStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("添加远程订阅"));
-        var urlRow = new Grid { ColumnSpacing = 8 };
-        urlRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        urlRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        _urlBox = new TextBox { PlaceholderText = "https://... 订阅链接 URL" };
-        var pasteUrlBtn = new Button { Content = "粘贴链接" };
-        pasteUrlBtn.Click += (_, _) =>
+        var quickRow = new Grid { ColumnSpacing = 8 };
+        quickRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        quickRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        quickRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        quickRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        _quickUrlBox = new TextBox { PlaceholderText = "https://... 订阅链接 URL" };
+        var quickPasteBtn = new Button { Content = "粘贴" };
+        quickPasteBtn.Click += (_, _) =>
         {
             var clip = NetoWindowHelper.GetClipboardText();
-            if (!string.IsNullOrWhiteSpace(clip)) _urlBox.Text = clip.Trim();
+            if (!string.IsNullOrWhiteSpace(clip)) _quickUrlBox.Text = clip.Trim();
         };
-        Grid.SetColumn(pasteUrlBtn, 1);
-        urlRow.Children.Add(_urlBox);
-        urlRow.Children.Add(pasteUrlBtn);
+        _quickImportBtn = new Button { Content = "导入" };
+        NetoUiFactory.ApplyPrimaryButton(_quickImportBtn, true);
+        _quickImportBtn.Click += async (_, _) =>
+        {
+            var u = (_quickUrlBox.Text ?? "").Trim();
+            if (string.IsNullOrEmpty(u)) return;
+            await _client.AddRemoteProfileAsync("", u, 60, "aerion");
+            if (_client.LastActionError == null) _quickUrlBox.Text = "";
+        };
+        var advBtn = new Button { Content = "高级 / 本地" };
+        advBtn.Click += (_, _) =>
+        {
+            var typed = (_quickUrlBox.Text ?? "").Trim();
+            if (!string.IsNullOrEmpty(typed) && string.IsNullOrWhiteSpace(_advUrlBox.Text))
+            {
+                _advUrlBox.Text = typed;
+            }
+            OpenSubpage("advanced_import");
+        };
+        Grid.SetColumn(quickPasteBtn, 1);
+        Grid.SetColumn(_quickImportBtn, 2);
+        Grid.SetColumn(advBtn, 3);
+        quickRow.Children.Add(_quickUrlBox);
+        quickRow.Children.Add(quickPasteBtn);
+        quickRow.Children.Add(_quickImportBtn);
+        quickRow.Children.Add(advBtn);
+        _rootPane.Children.Add(NetoUiFactory.CreateCard(quickRow));
+
+        _errLabel = new TextBlock
+        {
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = new SolidColorBrush(Color.FromArgb(255, 216, 82, 76)),
+        };
+        _errCard = NetoUiFactory.CreateCard(_errLabel, new Thickness(12, 8, 12, 8));
+        _errCard.Visibility = Visibility.Collapsed;
+        _rootPane.Children.Add(_errCard);
+
+        _refreshAllBtn = new Button { Content = "全部更新", Padding = new Thickness(10, 4, 10, 4), Visibility = Visibility.Collapsed };
+        _refreshAllBtn.Click += async (_, _) => await _client.RefreshAllProfilesAsync();
+        _rootPane.Children.Add(NetoUiFactory.CreateInlineCardHeader("已保存订阅", _refreshAllBtn));
+
+        _savedList = new StackPanel { Spacing = 8 };
+        _rootPane.Children.Add(_savedList);
+
+        _advImportPane = new StackPanel { Spacing = 10, Visibility = Visibility.Collapsed };
+        _advImportPane.Children.Add(NetoUiFactory.CreateSubpageHeader("高级与本地导入", ResetToRoot));
+
+        var remoteStack = new StackPanel { Spacing = 8 };
+        remoteStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("远程订阅参数"));
+        var advUrlRow = new Grid { ColumnSpacing = 8 };
+        advUrlRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        advUrlRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        _advUrlBox = new TextBox { PlaceholderText = "https://... 订阅链接 URL" };
+        var advPasteBtn = new Button { Content = "粘贴链接" };
+        advPasteBtn.Click += (_, _) =>
+        {
+            var clip = NetoWindowHelper.GetClipboardText();
+            if (!string.IsNullOrWhiteSpace(clip)) _advUrlBox.Text = clip.Trim();
+        };
+        Grid.SetColumn(advPasteBtn, 1);
+        advUrlRow.Children.Add(_advUrlBox);
+        advUrlRow.Children.Add(advPasteBtn);
 
         var metaRow = new Grid { ColumnSpacing = 8 };
         metaRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        metaRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(168) });
-        metaRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(188) });
+        metaRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(160) });
+        metaRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(180) });
         metaRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        _nameBox = new TextBox { PlaceholderText = "备注名称（留空自动识别域名）" };
+        _advNameBox = new TextBox { PlaceholderText = "备注名称（留空自动识别）" };
         _flagCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
         foreach (var (_, label) in FlagOptions) _flagCombo.Items.Add(label);
         _flagCombo.SelectedIndex = 0;
         _autoUpdateCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
         foreach (var (_, label) in AutoUpdateIntervals) _autoUpdateCombo.Items.Add(label);
         _autoUpdateCombo.SelectedIndex = 2;
-        _importBtn = new Button { Content = "拉取添加", VerticalAlignment = VerticalAlignment.Center };
-        NetoUiFactory.ApplyPrimaryButton(_importBtn, true);
-        _importBtn.Click += async (_, _) =>
+        _advImportBtn = new Button { Content = "拉取添加", VerticalAlignment = VerticalAlignment.Center };
+        NetoUiFactory.ApplyPrimaryButton(_advImportBtn, true);
+        _advImportBtn.Click += async (_, _) =>
         {
-            var u = _urlBox.Text.Trim();
+            var u = (_advUrlBox.Text ?? "").Trim();
             if (string.IsNullOrEmpty(u)) return;
             var flagIdx = Math.Clamp(_flagCombo.SelectedIndex, 0, FlagOptions.Length - 1);
             var selIdx = Math.Clamp(_autoUpdateCombo.SelectedIndex, 0, AutoUpdateIntervals.Length - 1);
             var mins = AutoUpdateIntervals[selIdx].Mins;
-            await _client.AddRemoteProfileAsync(_nameBox.Text.Trim(), u, mins, FlagOptions[flagIdx].Flag);
+            await _client.AddRemoteProfileAsync((_advNameBox.Text ?? "").Trim(), u, mins, FlagOptions[flagIdx].Flag);
             if (_client.LastActionError == null)
             {
-                _nameBox.Text = "";
-                _urlBox.Text = "";
+                _advNameBox.Text = "";
+                _advUrlBox.Text = "";
+                _quickUrlBox.Text = "";
+                ResetToRoot();
             }
         };
         Grid.SetColumn(_flagCombo, 1);
         Grid.SetColumn(_autoUpdateCombo, 2);
-        Grid.SetColumn(_importBtn, 3);
-        metaRow.Children.Add(_nameBox);
+        Grid.SetColumn(_advImportBtn, 3);
+        metaRow.Children.Add(_advNameBox);
         metaRow.Children.Add(_flagCombo);
         metaRow.Children.Add(_autoUpdateCombo);
-        metaRow.Children.Add(_importBtn);
-        addStack.Children.Add(urlRow);
-        addStack.Children.Add(metaRow);
-        outer.Children.Add(NetoUiFactory.CreateCard(addStack));
+        metaRow.Children.Add(_advImportBtn);
+        remoteStack.Children.Add(advUrlRow);
+        remoteStack.Children.Add(metaRow);
+        _advImportPane.Children.Add(NetoUiFactory.CreateCard(remoteStack));
 
-        var yamlStack = new StackPanel { Spacing = 8 };
-        _yamlBox = new TextBox
-        {
-            AcceptsReturn = true,
-            TextWrapping = TextWrapping.Wrap,
-            MinHeight = 120,
-            MaxHeight = 260,
-            PlaceholderText = "粘贴或从文件载入 Clash / Aerion YAML 配置",
-            FontFamily = new FontFamily("Consolas"),
-        };
         var yamlActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var pickFileBtn = new Button { Content = "选择 YAML 文件" };
         pickFileBtn.Click += async (_, _) =>
@@ -135,9 +196,9 @@ public sealed class ProfilesPageView
             if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
             var content = await File.ReadAllTextAsync(path);
             _yamlBox.Text = content;
-            if (string.IsNullOrWhiteSpace(_nameBox.Text))
+            if (string.IsNullOrWhiteSpace(_localNameBox.Text))
             {
-                _nameBox.Text = Path.GetFileNameWithoutExtension(path);
+                _localNameBox.Text = Path.GetFileNameWithoutExtension(path);
             }
         };
         var pasteYamlBtn = new Button { Content = "粘贴剪贴板" };
@@ -148,60 +209,54 @@ public sealed class ProfilesPageView
         };
         yamlActions.Children.Add(pickFileBtn);
         yamlActions.Children.Add(pasteYamlBtn);
+
+        var yamlStack = new StackPanel { Spacing = 8 };
+        yamlStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("本地 YAML 配置", yamlActions));
+        _localNameBox = new TextBox { PlaceholderText = "配置名称（可选）" };
+        _yamlBox = new TextBox
+        {
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.NoWrap,
+            MinHeight = 136,
+            MaxHeight = 340,
+            FontSize = 12,
+            PlaceholderText = "粘贴或从文件载入 Clash / Aerion YAML 配置",
+            FontFamily = new FontFamily("Consolas"),
+        };
         _saveYamlBtn = new Button { Content = "保存本地配置", HorizontalAlignment = HorizontalAlignment.Right };
         NetoUiFactory.ApplyPrimaryButton(_saveYamlBtn, true);
         _saveYamlBtn.Click += async (_, _) =>
         {
             if (string.IsNullOrWhiteSpace(_yamlBox.Text)) return;
-            await _client.ImportLocalProfileAsync(_nameBox.Text.Trim(), _yamlBox.Text);
-            if (_client.LastActionError == null) _yamlBox.Text = "";
+            await _client.ImportLocalProfileAsync((_localNameBox.Text ?? "").Trim(), _yamlBox.Text);
+            if (_client.LastActionError == null)
+            {
+                _localNameBox.Text = "";
+                _yamlBox.Text = "";
+                ResetToRoot();
+            }
         };
-        yamlStack.Children.Add(yamlActions);
+        yamlStack.Children.Add(_localNameBox);
         yamlStack.Children.Add(_yamlBox);
         yamlStack.Children.Add(_saveYamlBtn);
-        var expander = new Expander
-        {
-            Header = "导入本地 YAML 配置",
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            Content = yamlStack,
-        };
-        outer.Children.Add(expander);
+        _advImportPane.Children.Add(NetoUiFactory.CreateCard(yamlStack));
 
-        _errLabel = new TextBlock
-        {
-            FontSize = 12,
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = new SolidColorBrush(Color.FromArgb(255, 216, 82, 76)),
-        };
-        _errCard = NetoUiFactory.CreateCard(_errLabel, new Thickness(12, 8, 12, 8));
-        _errCard.Visibility = Visibility.Collapsed;
-        outer.Children.Add(_errCard);
-
-        var editStack = new StackPanel { Spacing = 8 };
-        _editCardTitle = new TextBlock { FontSize = 13, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
-        var editBtnRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        var cancelEditBtn = new Button { Content = "取消" };
-        var saveEditBtn = new Button { Content = "保存" };
+        _editPane = new StackPanel { Spacing = 10, Visibility = Visibility.Collapsed };
+        var saveEditBtn = new Button { Content = "保存更改" };
         NetoUiFactory.ApplyPrimaryButton(saveEditBtn, true);
-        cancelEditBtn.Click += (_, _) => CloseEditor();
         saveEditBtn.Click += async (_, _) => await SaveEditedProfileAsync(saveEditBtn);
-        editBtnRow.Children.Add(cancelEditBtn);
-        editBtnRow.Children.Add(saveEditBtn);
-        var editHeader = new Grid();
-        editHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        editHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        Grid.SetColumn(editBtnRow, 1);
-        editHeader.Children.Add(_editCardTitle);
-        editHeader.Children.Add(editBtnRow);
+        var editHeaderGrid = NetoUiFactory.CreateSubpageHeader("", ResetToRoot, saveEditBtn);
+        _editSubpageTitle = (TextBlock)editHeaderGrid.Children[1];
+        _editPane.Children.Add(editHeaderGrid);
 
+        var editCardStack = new StackPanel { Spacing = 10 };
         _editNameBox = new TextBox { Header = "订阅名称" };
         _editUrlBox = new TextBox { Header = "订阅地址" };
         _editFlagCombo = new ComboBox { Header = "订阅格式", HorizontalAlignment = HorizontalAlignment.Stretch };
         foreach (var (_, label) in FlagOptions) _editFlagCombo.Items.Add(label);
         _editAutoCombo = new ComboBox { Header = "更新周期", HorizontalAlignment = HorizontalAlignment.Stretch };
         foreach (var (_, label) in AutoUpdateIntervals) _editAutoCombo.Items.Add(label);
-        _editRemoteRow = new Grid { ColumnSpacing = 8 };
+        _editRemoteRow = new Grid { ColumnSpacing = 10 };
         _editRemoteRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         _editRemoteRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         Grid.SetColumn(_editAutoCombo, 1);
@@ -213,41 +268,46 @@ public sealed class ProfilesPageView
             Header = "YAML 内容",
             AcceptsReturn = true,
             TextWrapping = TextWrapping.NoWrap,
-            MinHeight = 160,
-            MaxHeight = 280,
+            MinHeight = 320,
+            MaxHeight = 480,
             FontSize = 12,
             FontFamily = new FontFamily("Consolas"),
         };
-        editStack.Children.Add(editHeader);
-        editStack.Children.Add(_editNameBox);
-        editStack.Children.Add(_editUrlBox);
-        editStack.Children.Add(_editRemoteRow);
-        editStack.Children.Add(_editYamlBox);
-        _editCard = NetoUiFactory.CreateCard(editStack);
-        _editCard.Visibility = Visibility.Collapsed;
-        outer.Children.Add(_editCard);
+        editCardStack.Children.Add(_editNameBox);
+        editCardStack.Children.Add(_editUrlBox);
+        editCardStack.Children.Add(_editRemoteRow);
+        editCardStack.Children.Add(_editYamlBox);
+        _editPane.Children.Add(NetoUiFactory.CreateCard(editCardStack));
 
-        _refreshAllBtn = new Button { Content = "全部更新", Padding = new Thickness(10, 4, 10, 4), Visibility = Visibility.Collapsed };
-        _refreshAllBtn.Click += async (_, _) => await _client.RefreshAllProfilesAsync();
-        outer.Children.Add(NetoUiFactory.CreateInlineCardHeader("已保存订阅", _refreshAllBtn));
+        _subPane.Children.Add(_advImportPane);
+        _subPane.Children.Add(_editPane);
 
-        _savedList = new StackPanel { Spacing = 8 };
-        outer.Children.Add(_savedList);
-
+        outer.Children.Add(_rootPane);
+        outer.Children.Add(_subPane);
         Root = NetoUiFactory.CreateCenteredScrollViewer(outer);
     }
 
-    private void CloseEditor()
+    public void ResetToRoot()
     {
         _editingProfileId = null;
-        _editCard.Visibility = Visibility.Collapsed;
+        _subPane.Visibility = Visibility.Collapsed;
+        _rootPane.Visibility = Visibility.Visible;
+    }
+
+    public void OpenSubpage(string key)
+    {
+        _advImportPane.Visibility = key == "advanced_import" ? Visibility.Visible : Visibility.Collapsed;
+        _editPane.Visibility = key == "edit" ? Visibility.Visible : Visibility.Collapsed;
+        _rootPane.Visibility = Visibility.Collapsed;
+        _subPane.Visibility = Visibility.Visible;
+        Root.ChangeView(null, 0, null, true);
     }
 
     private void OpenMetadataEditor(NetoProfileBrief prof)
     {
         _editingProfileId = prof.Id;
         _editingYamlMode = false;
-        _editCardTitle.Text = $"编辑订阅 · {prof.Name}";
+        _editSubpageTitle.Text = $"编辑订阅 · {prof.Name}";
         _editNameBox.Text = prof.Name;
         _editNameBox.Visibility = Visibility.Visible;
         var hasRemote = !string.IsNullOrWhiteSpace(prof.Url);
@@ -259,20 +319,20 @@ public sealed class ProfilesPageView
         var autoIdx = Array.FindIndex(AutoUpdateIntervals, a => a.Mins == (int)prof.AutoUpdateMins);
         _editAutoCombo.SelectedIndex = autoIdx >= 0 ? autoIdx : 2;
         _editYamlBox.Visibility = Visibility.Collapsed;
-        _editCard.Visibility = Visibility.Visible;
+        OpenSubpage("edit");
     }
 
     private async Task OpenYamlEditorAsync(NetoProfileBrief prof)
     {
         _editingProfileId = prof.Id;
         _editingYamlMode = true;
-        _editCardTitle.Text = $"编辑配置 YAML · {prof.Name}";
+        _editSubpageTitle.Text = $"编辑配置 YAML · {prof.Name}";
         _editNameBox.Visibility = Visibility.Collapsed;
         _editUrlBox.Visibility = Visibility.Collapsed;
         _editRemoteRow.Visibility = Visibility.Collapsed;
         _editYamlBox.Text = await _client.GetProfileYamlAsync(prof.Id);
         _editYamlBox.Visibility = Visibility.Visible;
-        _editCard.Visibility = Visibility.Visible;
+        OpenSubpage("edit");
     }
 
     private async Task SaveEditedProfileAsync(Button btn)
@@ -289,12 +349,12 @@ public sealed class ProfilesPageView
             {
                 var flag = FlagOptions[Math.Clamp(_editFlagCombo.SelectedIndex, 0, FlagOptions.Length - 1)].Flag;
                 var mins = AutoUpdateIntervals[Math.Clamp(_editAutoCombo.SelectedIndex, 0, AutoUpdateIntervals.Length - 1)].Mins;
-                var url = _editUrlBox.Visibility == Visibility.Visible ? _editUrlBox.Text.Trim() : null;
-                await _client.UpdateProfileAsync(_editingProfileId, name: _editNameBox.Text.Trim(), url: url, flag: flag, autoUpdateMins: mins);
+                var url = _editUrlBox.Visibility == Visibility.Visible ? (_editUrlBox.Text ?? "").Trim() : null;
+                await _client.UpdateProfileAsync(_editingProfileId, name: (_editNameBox.Text ?? "").Trim(), url: url, flag: flag, autoUpdateMins: mins);
             }
             if (_client.LastActionError == null)
             {
-                CloseEditor();
+                ResetToRoot();
             }
         }
         finally
@@ -305,13 +365,15 @@ public sealed class ProfilesPageView
 
     public void ApplySnapshot(NetoSnapshot snap, bool busy, string? err)
     {
-        _importBtn.IsEnabled = !busy;
+        _quickImportBtn.IsEnabled = !busy;
+        _advImportBtn.IsEnabled = !busy;
         _saveYamlBtn.IsEnabled = !busy;
         _refreshAllBtn.IsEnabled = !busy;
         _refreshAllBtn.Visibility = snap.Profiles.Count(p => !string.IsNullOrWhiteSpace(p.Url)) > 1
             ? Visibility.Visible
             : Visibility.Collapsed;
-        _importBtn.Content = busy ? "拉取中..." : "拉取添加";
+        _quickImportBtn.Content = busy ? "导入中..." : "导入";
+        _advImportBtn.Content = busy ? "拉取中..." : "拉取添加";
         if (!string.IsNullOrWhiteSpace(err))
         {
             _errLabel.Text = err;

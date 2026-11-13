@@ -137,10 +137,16 @@ mod imp {
             let desktop_file = autostart_dir.join(format!("{}.desktop", self.app_id));
             if enabled {
                 let exe = std::env::current_exe().context("resolve current executable")?;
+                let icon = if self.app_id.trim().is_empty() {
+                    "network-vpn"
+                } else {
+                    self.app_id.as_str()
+                };
                 let content = format!(
-                    "[Desktop Entry]\nType=Application\nName={}\nExec=\"{}\" --minimized\nIcon=network-vpn\nTerminal=false\nCategories=Network;\nStartupWMClass={}\nX-GNOME-Autostart-enabled=true\n",
+                    "[Desktop Entry]\nType=Application\nName={}\nExec=\"{}\" --minimized\nIcon={}\nTerminal=false\nCategories=Network;\nStartupWMClass={}\nX-GNOME-Autostart-enabled=true\n",
                     self.app_name,
                     exe.display(),
+                    icon,
                     self.app_id
                 );
                 std::fs::write(&desktop_file, content)?;

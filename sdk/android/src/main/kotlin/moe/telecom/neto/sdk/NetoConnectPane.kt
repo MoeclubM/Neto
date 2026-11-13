@@ -127,6 +127,16 @@ fun NetoConnectPane(
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Medium,
                 )
+                if (conn.connected) {
+                    val latSuffix = snapshot.telemetry.latencyMs?.takeIf { it >= 0L }?.let { " · $it ms" }.orEmpty()
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "↑ ${formatNetoSpeed(snapshot.telemetry.uploadSpeedBps)}  ↓ ${formatNetoSpeed(snapshot.telemetry.downloadSpeedBps)}$latSuffix",
+                        style = MiuixTheme.textStyles.body2,
+                        fontFamily = FontFamily.Monospace,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                }
                 Spacer(Modifier.height(20.dp))
                 Button(
                     onClick = onToggleConnect,
@@ -184,27 +194,6 @@ fun NetoConnectPane(
                 ) {
                     Text(label)
                 }
-            }
-        }
-
-        if (conn.connected) {
-            Spacer(Modifier.height(12.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                NetoSpeedChartCard(
-                    upload = snapshot.telemetry.uploadHistory,
-                    download = snapshot.telemetry.downloadHistory,
-                    upBps = snapshot.telemetry.uploadSpeedBps,
-                    downBps = snapshot.telemetry.downloadSpeedBps,
-                    modifier = Modifier.weight(1f),
-                )
-                NetoLatencyChartCard(
-                    samples = snapshot.telemetry.latencyHistory,
-                    currentMs = snapshot.telemetry.latencyMs,
-                    modifier = Modifier.weight(1f),
-                )
             }
         }
 
