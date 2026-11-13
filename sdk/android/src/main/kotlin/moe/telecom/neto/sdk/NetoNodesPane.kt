@@ -27,6 +27,7 @@ import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.preference.RadioButtonPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -39,13 +40,12 @@ fun NetoNodesPane(
     blockedContent: (@Composable () -> Unit)? = null,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
+    var protoFilter by rememberSaveable { mutableStateOf("") }
+    val protocols = snapshot.nodes.map { it.protocolLabel }.filter { it.isNotBlank() }.distinct().sorted()
     val q = query.trim().lowercase()
-    val visibleNodes = if (q.isEmpty()) {
-        snapshot.nodes
-    } else {
-        snapshot.nodes.filter {
-            it.name.lowercase().contains(q) || it.protocolLabel.lowercase().contains(q)
-        }
+    val visibleNodes = snapshot.nodes.filter { node ->
+        (protoFilter.isEmpty() || node.protocolLabel.equals(protoFilter, ignoreCase = true)) &&
+            (q.isEmpty() || node.name.lowercase().contains(q) || node.protocolLabel.lowercase().contains(q) || node.tags.any { it.lowercase().contains(q) })
     }
 
     if (blockedContent != null) {
@@ -102,6 +102,22 @@ fun NetoNodesPane(
                         Text(if (snapshot.nodesTesting) "测速中" else "测速")
                     }
                 }
+                if (protocols.size > 1) {
+                    Spacer(Modifier.height(8.dp))
+                    val items = listOf("全部协议") + protocols
+                    val idx = if (protoFilter.isEmpty()) 0 else (protocols.indexOfFirst { it.equals(protoFilter, ignoreCase = true) } + 1).coerceAtLeast(0)
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        OverlayDropdownPreference(
+                            title = "协议筛选",
+                            summary = items[idx],
+                            items = items,
+                            selectedIndex = idx,
+                            onSelectedIndexChange = { next ->
+                                protoFilter = if (next == 0) "" else protocols[next - 1]
+                            },
+                        )
+                    }
+                }
             }
         }
 
@@ -111,16 +127,33 @@ fun NetoNodesPane(
                 NetoPreferenceCard {
                     snapshot.proxyGroups.forEach { group ->
                         if (group.proxies.isNotEmpty()) {
-                            val selIdx = group.proxies.indexOf(group.selected ?: "").coerceAtLeast(0)
-                            OverlayDropdownPreference(
-                                title = group.name,
-                                summary = group.selected ?: group.proxies.first(),
-                                items = group.proxies,
-                                selectedIndex = selIdx,
-                                onSelectedIndexChange = { idx ->
-                                    client.selectGroupProxy(group.name, group.proxies[idx])
-                                },
-                            )
+                            val activeTarget = group.now ?: group.selected ?: group.proxies.first()
+                            if (group.isManualSelect) {
+                                val selIdx = group.proxies.indexOf(activeTarget).coerceAtLeast(0)
+                                OverlayDropdownPreference(
+                                    title = "${group.name} · ${group.groupTypeLabel}",
+                                    summary = activeTarget,
+                                    items = group.proxies,
+                                    selectedIndex = selIdx,
+                                    onSelectedIndexChange = { idx ->
+                                        client.selectGroupProxy(group.name, group.proxies[idx])
+                                    },
+                                )
+                            } else {
+                                ArrowPreference(
+                                    title = "${group.name} · ${group.groupTypeLabel}",
+                                    summary = "当前命中：$activeTarget",
+                                    onClick = { client.testGroupNodes(group.name) },
+                                    endActions = {
+                                        IconButton(
+                                            onClick = { client.testGroupNodes(group.name) },
+                                            modifier = Modifier.size(34.dp),
+                                        ) {
+                                            Text("↻")
+                                        }
+                                    },
+                                )
+                            }
                         }
                     }
                 }

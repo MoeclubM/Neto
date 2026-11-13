@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
@@ -43,6 +44,8 @@ fun NetoDashboardPane(
     extraHeaderSlot: (@Composable () -> Unit)? = null,
 ) {
     var customizing by rememberSaveable { mutableStateOf(false) }
+    var showConnections by rememberSaveable { mutableStateOf(false) }
+    val checkingConnectivity by client.checkingConnectivity.collectAsStateWithLifecycle()
     val widgets = snapshot.settings.dashboardWidgets
 
     LazyColumn(
@@ -154,8 +157,54 @@ fun NetoDashboardPane(
                             title = node?.name ?: "暂无可用节点",
                             summary = node?.let {
                                 listOfNotNull(it.protocolLabel, it.latencyMs?.let { ms -> "$ms ms" }).joinToString(" · ")
-                            } ?: "前往节点页选择",
+                            } ?: "未选择",
                             onClick = onOpenNodes,
+                        )
+                    }
+                }
+                "active_connections" -> {
+                    SmallTitle("活跃会话")
+                    NetoPreferenceCard {
+                        ArrowPreference(
+                            title = "${snapshot.telemetry.activeSessions} 个并发会话",
+                            summary = "累计 ↑ ${formatNetoBytes(snapshot.telemetry.uploadBytes)} · ↓ ${formatNetoBytes(snapshot.telemetry.downloadBytes)}",
+                            onClick = { showConnections = true },
+                            endActions = {
+                                if (snapshot.connection.connected && snapshot.telemetry.activeSessions > 0) {
+                                    TextButton(text = "断开全部", onClick = client::closeAllConnections)
+                                }
+                            },
+                        )
+                    }
+                }
+                "exit_check" -> {
+                    SmallTitle("出口检测")
+                    val checkRes = snapshot.lastNetworkCheck
+                    val checkTitle = if (checkRes == null) {
+                        "未检测"
+                    } else {
+                        listOfNotNull(checkRes.exitIp, checkRes.exitCountry, checkRes.exitIsp)
+                            .joinToString(" · ")
+                            .ifBlank { "未识别出口 IP" }
+                    }
+                    val checkSummary = if (checkRes == null) {
+                        "检测出口 IP 与站点延迟"
+                    } else {
+                        checkRes.targets.joinToString(" · ") { t ->
+                            t.latencyMs?.let { "${t.name} ${it}ms" } ?: "${t.name} 超时"
+                        }
+                    }
+                    NetoPreferenceCard {
+                        ArrowPreference(
+                            title = checkTitle,
+                            summary = checkSummary,
+                            onClick = client::checkConnectivity,
+                            endActions = {
+                                TextButton(
+                                    text = if (checkingConnectivity) "检测中" else "检测",
+                                    onClick = client::checkConnectivity,
+                                )
+                            },
                         )
                     }
                 }
@@ -213,7 +262,7 @@ fun NetoDashboardPane(
                             title = prof?.name ?: "未配置订阅",
                             summary = prof?.let {
                                 "${it.nodeCount} 节点 · ${it.ruleCount} 规则 · 更新于 ${formatNetoUnixDate(it.updatedAtUnix)}"
-                            } ?: "前往订阅页添加",
+                            } ?: "暂无订阅",
                             onClick = { onOpenProfiles?.invoke() },
                             endActions = {
                                 if (prof != null && prof.url.isNotBlank()) {
@@ -263,5 +312,12 @@ fun NetoDashboardPane(
                 }
             }
         }
+    }
+
+    if (showConnections) {
+        NetoActiveConnectionsDialog(
+            client = client,
+            onDismiss = { showConnections = false },
+        )
     }
 }

@@ -14,12 +14,12 @@ includeBuild("deps/neto") {
 }
 ```
 
-2. 在应用模块依赖 `implementation("moe.telecom.neto:sdk:0.0.2")`，即可直接复用：
+2. 在应用模块依赖 `implementation("moe.telecom.neto:sdk:0.0.3")`，即可直接复用：
    - `NetoControllerClient`（包含 `upsertManagedProfile` 商业订阅注入接口）
    - `NetoVpnService`（通过 Manifest Merge 自动注册）
    - `NetoConnectPane`（支持传入 `blockedContent` 商业套餐到期提示槽位）
    - `NetoDashboardPane`（支持传入 `extraHeaderSlot` 公告/账户摘要槽位）
-   - `NetoNodesPane` 与 `NetoSettingsPane`
+   - `NetoNodesPane`、`NetoSettingsPane` 与 `NetoDiagnosticsDialogs`（活跃会话、分流规则与匹配测试、分级运行日志弹窗）
 
 ## Windows WinUI 3 集成
 
@@ -29,8 +29,8 @@ includeBuild("deps/neto") {
 <ProjectReference Include="..\..\deps\neto\sdk\windows\Neto.Sdk.Windows.csproj" />
 ```
 
-2. 将构建生成的 `neto_ffi.dll`（或聚合导出库）与 `wintun.dll` 放入输出目录，即可直接使用 `NetoClient`、`SingleInstanceGuard`、`NetoWindowHelper`、`Win32TrayIcon`、`ConnectPageView`、`DashboardPageView`、`NodesPageView` 与 `SettingsPageView`。
+2. 将构建生成的 `neto_ffi.dll`（或聚合导出库）与 `wintun.dll` 放入输出目录，即可直接使用 `NetoClient`、`SingleInstanceGuard`、`NetoWindowHelper`、`Win32TrayIcon`、`ConnectPageView`、`DashboardPageView`、`NodesPageView`、`ConnectionsPageView` 与 `SettingsPageView`。
 
 ## Linux Wayland (GTK4 + libadwaita) 集成
 
-在 `Cargo.toml` 中引用 `neto-core`、`neto-platform-linux` 与 `neto-ui-gtk`，将 `ConnectView`、`DashboardView`、`NodesView`、`SettingsView` 与自定义商业面板视图共同挂载到 `adw::ViewStack` 即可。
+在 `Cargo.toml` 中引用 `neto-core`、`neto-platform-linux` 与 `neto-ui-gtk`，将 `ConnectView`、`DashboardView`、`NodesView`、`ConnectionsView`、`SettingsView` 与自定义商业面板视图共同挂载到 `adw::ViewStack` 即可。

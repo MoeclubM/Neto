@@ -206,15 +206,20 @@ public static class NetoWindowHelper
         }
     }
 
-    public static string BuildTerminalProxyCommand(NetoSnapshot snap)
+    public static string BuildTerminalProxyCommand(NetoSnapshot snap, string shellFormat = "powershell")
     {
         var httpAddr = !string.IsNullOrWhiteSpace(snap.Connection.HttpProxyAddr)
             ? snap.Connection.HttpProxyAddr
             : $"127.0.0.1:{snap.Settings.MixedPort}";
-        var socksPart = !string.IsNullOrWhiteSpace(snap.Connection.SocksAddr)
-            ? $" $env:ALL_PROXY='socks5://{snap.Connection.SocksAddr}';"
-            : "";
-        return $"$env:HTTP_PROXY='http://{httpAddr}'; $env:HTTPS_PROXY='http://{httpAddr}';{socksPart}";
+        var socksAddr = !string.IsNullOrWhiteSpace(snap.Connection.SocksAddr)
+            ? snap.Connection.SocksAddr
+            : httpAddr;
+        return shellFormat.Trim().ToLowerInvariant() switch
+        {
+            "cmd" => $"set HTTP_PROXY=http://{httpAddr}& set HTTPS_PROXY=http://{httpAddr}& set ALL_PROXY=socks5://{socksAddr}",
+            "bash" => $"export http_proxy=http://{httpAddr} https_proxy=http://{httpAddr} all_proxy=socks5://{socksAddr}",
+            _ => $"$env:HTTP_PROXY='http://{httpAddr}'; $env:HTTPS_PROXY='http://{httpAddr}'; $env:ALL_PROXY='socks5://{socksAddr}'",
+        };
     }
 
     public static void OpenFolder(string path)

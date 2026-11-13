@@ -14,12 +14,14 @@ public sealed class DashboardPageView
     private readonly Action _onOpenNodes;
     private readonly Action? _onOpenProfiles;
     private readonly Action? _onRequestElevation;
+    private readonly Action? _onOpenConnections;
     private readonly StackPanel _extraHeaderHost;
     private readonly StackPanel _customizePanel;
     private readonly Grid _cardsGrid;
     private readonly Button _customizeBtn;
     private readonly Button _resetBtn;
     private bool _customizing;
+    private bool _checkingExit;
     private bool _updating;
     private string _lastLayoutSig = "";
     private string _lastCustomizeSig = "";
@@ -28,6 +30,8 @@ public sealed class DashboardPageView
     private NetoDualSeriesChart? _latencyChart;
     private ToggleSwitch? _spSwitch;
     private ToggleSwitch? _tunSwitch;
+    private TextBlock? _activeConnTitle;
+    private TextBlock? _activeConnSub;
     private TextBlock? _trafficTitle;
     private TextBlock? _trafficSub;
     private ProgressBar? _quotaBar;
@@ -40,12 +44,14 @@ public sealed class DashboardPageView
         Action onOpenNodes,
         Action? onOpenProfiles = null,
         Action? onRequestElevation = null,
-        bool detachHeaderActions = false)
+        bool detachHeaderActions = false,
+        Action? onOpenConnections = null)
     {
         _client = client;
         _onOpenNodes = onOpenNodes;
         _onOpenProfiles = onOpenProfiles;
         _onRequestElevation = onRequestElevation;
+        _onOpenConnections = onOpenConnections;
 
         var outer = new StackPanel
         {
@@ -113,6 +119,7 @@ public sealed class DashboardPageView
 
         var sel = snap.SelectedNode;
         var prof = snap.ActiveProfile;
+        var exitSig = snap.LastNetworkCheck?.CheckedAtMs.ToString() ?? "";
         var layoutSig = string.Join("|",
             widgetSig,
             snap.Settings.RoutingMode,
@@ -123,7 +130,9 @@ public sealed class DashboardPageView
             sel?.LatencyMs?.ToString() ?? "",
             prof?.Id ?? "",
             prof?.NodeCount.ToString() ?? "",
-            prof?.TotalBytes.ToString() ?? ""
+            prof?.TotalBytes.ToString() ?? "",
+            exitSig,
+            _checkingExit
         );
         if (_lastLayoutSig != layoutSig)
         {
@@ -177,6 +186,8 @@ public sealed class DashboardPageView
         _latencyChart = null;
         _spSwitch = null;
         _tunSwitch = null;
+        _activeConnTitle = null;
+        _activeConnSub = null;
         _trafficTitle = null;
         _trafficSub = null;
         _quotaBar = null;
@@ -228,11 +239,95 @@ public sealed class DashboardPageView
                     });
                     nStack.Children.Add(new TextBlock
                     {
-                        Text = isDirect ? "直连出站" : (sel != null ? (sel.LatencyMs.HasValue ? $"{sel.ProtocolLabel} · {sel.LatencyMs.Value} ms" : sel.ProtocolLabel) : "前往节点页选择"),
+                        Text = isDirect ? "直连出站" : (sel != null ? (sel.LatencyMs.HasValue ? $"{sel.ProtocolLabel} · {sel.LatencyMs.Value} ms" : sel.ProtocolLabel) : "未选择"),
                         FontSize = 12,
                         Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
                     });
                     builtCards.Add(NetoUiFactory.CreateCard(nStack));
+                    break;
+
+                case "active_connections":
+                    var connActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+                    if (snap.Connection.Connected)
+                    {
+                        var closeAllBtn = new Button { Content = "断开全部", Padding = new Thickness(8, 2, 8, 2), FontSize = 11 };
+                        closeAllBtn.Click += async (_, _) => await _client.CloseAllConnectionsAsync();
+                        connActions.Children.Add(closeAllBtn);
+                    }
+                    if (_onOpenConnections != null)
+                    {
+                        var viewConnBtn = new Button { Content = "查看", Padding = new Thickness(8, 2, 8, 2), FontSize = 11 };
+                        viewConnBtn.Click += (_, _) => _onOpenConnections();
+                        connActions.Children.Add(viewConnBtn);
+                    }
+                    var acStack = new StackPanel { Spacing = 4 };
+                    acStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("活跃会话", connActions));
+                    _activeConnTitle = new TextBlock { FontWeight = FontWeights.SemiBold };
+                    _activeConnSub = new TextBlock
+                    {
+                        FontSize = 12,
+                        Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                    };
+                    acStack.Children.Add(_activeConnTitle);
+                    acStack.Children.Add(_activeConnSub);
+                    builtCards.Add(NetoUiFactory.CreateCard(acStack));
+                    break;
+
+                case "exit_check":
+                    var checkBtn = new Button
+                    {
+                        Content = _checkingExit ? "检测中..." : "检测",
+                        IsEnabled = !_checkingExit,
+                        Padding = new Thickness(8, 2, 8, 2),
+                        FontSize = 11,
+                    };
+                    checkBtn.Click += async (_, _) =>
+                    {
+                        _checkingExit = true;
+                        _lastLayoutSig = "";
+                        ApplySnapshot(_client.Snapshot);
+                        try { await _client.CheckConnectivityAsync(); }
+                        finally
+                        {
+                            _checkingExit = false;
+                            _lastLayoutSig = "";
+                            ApplySnapshot(_client.Snapshot);
+                        }
+                    };
+                    var exStack = new StackPanel { Spacing = 6 };
+                    exStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("出口检测", checkBtn));
+                    var checkRes = snap.LastNetworkCheck;
+                    if (checkRes == null)
+                    {
+                        exStack.Children.Add(new TextBlock { Text = "未检测", FontWeight = FontWeights.SemiBold });
+                        exStack.Children.Add(new TextBlock
+                        {
+                            Text = "检测出口 IP 与站点连通延迟",
+                            FontSize = 12,
+                            Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                        });
+                    }
+                    else
+                    {
+                        var ipParts = new[] { checkRes.ExitIp, checkRes.ExitCountry, checkRes.ExitIsp }
+                            .Where(s => !string.IsNullOrWhiteSpace(s))
+                            .ToList();
+                        exStack.Children.Add(new TextBlock
+                        {
+                            Text = ipParts.Count > 0 ? string.Join(" · ", ipParts) : "未识别出口 IP",
+                            FontWeight = FontWeights.SemiBold,
+                            TextTrimming = TextTrimming.CharacterEllipsis,
+                        });
+                        var badgeWrap = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+                        foreach (var t in checkRes.Targets)
+                        {
+                            var label = t.LatencyMs.HasValue ? $"{t.Name} {t.LatencyMs.Value}ms" : $"{t.Name} 超时";
+                            var tint = NetoUiFactory.LatencyColor(t.LatencyMs, !t.Ok);
+                            badgeWrap.Children.Add(NetoUiFactory.CreateTagBadge(label, tint));
+                        }
+                        exStack.Children.Add(badgeWrap);
+                    }
+                    builtCards.Add(NetoUiFactory.CreateCard(exStack));
                     break;
 
                 case "network_takeover":
@@ -309,7 +404,7 @@ public sealed class DashboardPageView
                     pStack.Children.Add(new TextBlock { Text = prof?.Name ?? "未配置订阅", FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
                     pStack.Children.Add(new TextBlock
                     {
-                        Text = prof != null ? $"{prof.NodeCount} 节点 · {prof.RuleCount} 规则" : "前往订阅页导入配置",
+                        Text = prof != null ? $"{prof.NodeCount} 节点 · {prof.RuleCount} 规则" : "暂无订阅",
                         FontSize = 12,
                         Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
                     });
@@ -378,6 +473,11 @@ public sealed class DashboardPageView
                 snap.Telemetry.LatencyMs.HasValue ? $"{snap.Telemetry.LatencyMs.Value} ms" : "- ms",
                 valid
             );
+        }
+        if (_activeConnTitle != null && _activeConnSub != null)
+        {
+            _activeConnTitle.Text = $"{snap.Telemetry.ActiveSessions} 个并发会话";
+            _activeConnSub.Text = $"累计 ↑ {NetoFormat.FormatBytes(snap.Telemetry.UploadBytes)} · ↓ {NetoFormat.FormatBytes(snap.Telemetry.DownloadBytes)}";
         }
         if (_trafficTitle != null && _trafficSub != null)
         {

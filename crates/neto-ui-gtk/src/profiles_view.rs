@@ -36,11 +36,17 @@ impl ProfilesView {
         let add_group = adw::PreferencesGroup::builder().title("导入订阅").build();
         let name_row = adw::EntryRow::builder().title("名称（可选）").build();
         let url_row = adw::EntryRow::builder().title("订阅链接 URL").build();
+        let flag_row = adw::ComboRow::builder()
+            .title("订阅格式")
+            .model(&gtk::StringList::new(&["Aerion", "Clash Meta"]))
+            .selected(0)
+            .build();
         let import_btn = gtk::Button::with_label("拉取并添加");
         import_btn.add_css_class("suggested-action");
         import_btn.set_valign(gtk::Align::Center);
         url_row.add_suffix(&import_btn);
         add_group.add(&name_row);
+        add_group.add(&flag_row);
         add_group.add(&url_row);
 
         let yaml_expander = gtk::Expander::new(Some("导入本地 YAML 配置"));
@@ -77,10 +83,12 @@ impl ProfilesView {
             let handle = rt.clone();
             let nrow = name_row.clone();
             let urow = url_row.clone();
+            let frow = flag_row;
             let slbl = status_label.clone();
             import_btn.connect_clicked(move |btn| {
                 let name = nrow.text().to_string();
                 let url = urow.text().to_string();
+                let flag = if frow.selected() == 1 { "meta" } else { "aerion" };
                 if url.trim().is_empty() {
                     return;
                 }
@@ -89,7 +97,7 @@ impl ProfilesView {
                 let (tx, rx) = std::sync::mpsc::channel();
                 handle.spawn(async move {
                     let res = ctrl
-                        .add_remote_profile(&name, &url, "aerion", 60)
+                        .add_remote_profile(&name, &url, flag, 60)
                         .await
                         .map_err(|e| format!("{e:#}"));
                     let _ = tx.send(res);
@@ -204,6 +212,19 @@ impl ProfilesView {
             return;
         }
         let group = adw::PreferencesGroup::builder().title("已保存订阅").build();
+        if snap.profiles.iter().filter(|p| !p.url.is_empty()).count() > 1 {
+            let all_btn = gtk::Button::with_label("全部更新");
+            all_btn.add_css_class("flat");
+            let ctrl = self.controller.clone();
+            let rt = self.rt.clone();
+            all_btn.connect_clicked(move |_| {
+                let ctrl = ctrl.clone();
+                rt.spawn(async move {
+                    let _ = ctrl.refresh_all_profiles().await;
+                });
+            });
+            group.set_header_suffix(Some(&all_btn));
+        }
         for prof in &snap.profiles {
             let quota = if prof.total_bytes > 0 {
                 format!(
@@ -214,9 +235,14 @@ impl ProfilesView {
             } else {
                 String::new()
             };
+            let fmt_tag = if !prof.url.is_empty() {
+                if prof.flag.eq_ignore_ascii_case("meta") { "Meta · " } else { "Aerion · " }
+            } else {
+                ""
+            };
             let row = adw::ActionRow::builder()
                 .title(&prof.name)
-                .subtitle(&format!("{} 节点 · {} 规则{quota}", prof.node_count, prof.rule_count))
+                .subtitle(&format!("{fmt_tag}{} 节点 · {} 规则{quota}", prof.node_count, prof.rule_count))
                 .activatable(true)
                 .build();
             if prof.active {

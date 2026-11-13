@@ -100,7 +100,7 @@ jobs:
           if (-not (Test-Path $iscc)) {
             choco install innosetup --no-progress --yes
           }
-          & $iscc '/DMyAppVersion=0.0.2' '/DOutputBaseFilename=Neto-windows-x64-setup' 'apps/windows/installer/Neto.iss'
+          & $iscc '/DMyAppVersion=0.0.3' '/DOutputBaseFilename=Neto-windows-x64-setup' 'apps/windows/installer/Neto.iss'
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
           if (-not (Test-Path 'dist/Neto-windows-x64-setup.exe')) { throw 'Neto-windows-x64-setup.exe missing' }
       - name: Upload Windows installer
@@ -145,7 +145,7 @@ jobs:
           cp apps/linux/data/io.github.moeclubm.Neto.desktop "$pkg_root/usr/share/applications/"
           cat > "$pkg_root/DEBIAN/control" <<EOF
           Package: neto
-          Version: 0.0.2
+          Version: 0.0.3
           Section: net
           Priority: optional
           Architecture: ${{ matrix.arch }}
@@ -154,11 +154,11 @@ jobs:
           Description: Neto native subscription and proxy client for Linux Wayland
           EOF
           sed -i 's/^          //' "$pkg_root/DEBIAN/control"
-          dpkg-deb --root-owner-group --build "$pkg_root" "dist/neto_0.0.2_${{ matrix.arch }}.deb"
+          dpkg-deb --root-owner-group --build "$pkg_root" "dist/neto_0.0.3_${{ matrix.arch }}.deb"
       - name: Upload Linux deb
         uses: actions/upload-artifact@v7
         with:
           name: neto-linux-${{ matrix.arch }}
           archive: false
-          path: dist/neto_0.0.2_${{ matrix.arch }}.deb
+          path: dist/neto_0.0.3_${{ matrix.arch }}.deb
           if-no-files-found: error

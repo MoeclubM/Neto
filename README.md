@@ -5,14 +5,15 @@
 ## 核心特性
 
 - **逻辑共用、界面与系统能力原生分离**：
-  - 共享核心层（`crates/neto-core`、`crates/neto-ffi`）：统一负责远程订阅拉取（`Aerion` / `Clash.Meta` YAML、`subscription-userinfo` 配额解析、远程 `rule-providers` 规则展开）、本地 YAML 导入、DoH 与 `Flux` 多通道静态解析、SOCKS5 / 规则路由 / TUN 会话管理、本地 HTTP/CONNECT 混合代理、60 秒速率与延迟采样、连接日志。
+  - 共享核心层（`crates/neto-core`、`crates/neto-ffi`）：统一负责远程订阅拉取与编辑（`Aerion` / `Clash.Meta` YAML、`subscription-userinfo` 配额解析、远程 `rule-providers` 规则展开）、本地 YAML 导入与编辑、DoH 与 `Flux` 多通道静态解析、多策略组自动选路（`select` / `url-test` / `fallback`）、SOCKS5 / 规则路由 / TUN 会话管理、HTTP/HTTPS/SOCKS5 同端口本地混合代理、TCP/UDP 实时活跃会话追踪与单条/全部断开、分流规则检索与匹配测试、出口 IP 与多站点连通探测、分级日志过滤。
   - 原生系统层（`neto-platform-android`、`neto-platform-windows`、`neto-platform-linux`）：分别实现 Android `VpnService` 套接字保护与底层物理网络绑定、Windows Win32 `WinINet` 系统代理与注册表自启、Linux Wayland 会话优先、`gsettings` / `kwriteconfig` 系统代理与 `StatusNotifierItem` 原生托盘。
   - 原生界面层：Android 采用 Jetpack Compose + Miuix，Windows 采用 WinUI 3（.NET 9），Linux Wayland 采用 GTK4 + libadwaita。
 - **清晰的导航与页面职责**：
-  - 底栏独立导航：`连接`、`主页`、`节点`、`订阅`、`设置`。
+  - 桌面端底栏导航：`连接`、`主页`、`节点`、`会话`、`订阅`、`设置`（移动端将会话、规则与出口探测整合至主页卡片与诊断弹窗）。
   - **连接页**：无页面标题干扰，聚焦连接状态指示、实时连接时长、主连接开关、当前节点快捷跳转、规则/全局/直连模式切换及实时速率与延迟曲线。
-  - **可自定义主页**：支持实时速率、出站模式、当前节点、网络接管、流量统计、订阅概览、连通延迟、运行信息等模块化卡片的显示开关、上下排序与一键恢复默认。
-  - **独立节点页**：位于底栏一级入口，支持策略组选择、关键字筛选、默认/延迟/名称排序、批量并发测速与单节点延迟探测。
+  - **可自定义主页**：支持实时速率、出站模式、当前节点、活跃会话、出口检测、网络接管、流量统计、订阅概览、连通延迟、运行信息等模块化卡片的显示开关、上下排序与一键恢复默认。
+  - **独立节点页**：位于底栏一级入口，支持手动与自动策略组状态查看及按组测速、协议与关键字筛选、当前节点定位、默认/延迟/名称排序、批量并发测速与单节点延迟探测。
+  - **会话与规则诊断**：提供实时 TCP/UDP 活跃会话监控与强制断开、完整分流规则检索及目标域名/IP 路由匹配测试。
 
 ## 目录结构
 

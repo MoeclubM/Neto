@@ -223,4 +223,6 @@ pub struct EngineSnapshot {
     pub rule_count: usize,
     pub rules_preview: Vec<String>,
     pub telemetry: TelemetrySnapshot,
+    #[serde(default)]
+    pub last_network_check: Option<crate::diagnostics::NetworkCheckResult>,
 }

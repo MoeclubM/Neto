@@ -10,11 +10,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -28,6 +31,8 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.overlay.OverlayDialog
+import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.preference.RadioButtonPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -41,8 +46,11 @@ fun NetoProfilesPane(
 ) {
     var name by rememberSaveable { mutableStateOf("") }
     var url by rememberSaveable { mutableStateOf("") }
+    var flag by rememberSaveable { mutableStateOf("aerion") }
     var showYamlImport by rememberSaveable { mutableStateOf(false) }
     var yamlText by rememberSaveable { mutableStateOf("") }
+    var editingProfile by remember { mutableStateOf<NetoProfileBrief?>(null) }
+    val flagOptions = listOf("aerion" to "Aerion", "meta" to "Clash Meta")
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -75,6 +83,18 @@ fun NetoProfilesPane(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    flagOptions.forEach { (key, label) ->
+                        Button(
+                            onClick = { flag = key },
+                            modifier = Modifier.weight(1f),
+                            colors = if (flag == key) ButtonDefaults.buttonColorsPrimary() else ButtonDefaults.buttonColors(),
+                        ) {
+                            Text(label)
+                        }
+                    }
+                }
                 Spacer(Modifier.height(10.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -88,7 +108,7 @@ fun NetoProfilesPane(
                     Button(
                         onClick = {
                             if (url.isNotBlank()) {
-                                client.addRemoteProfile(name.trim(), url.trim()) {
+                                client.addRemoteProfile(name.trim(), url.trim(), flag = flag) {
                                     name = ""
                                     url = ""
                                 }
@@ -146,11 +166,26 @@ fun NetoProfilesPane(
 
         if (snapshot.profiles.isNotEmpty()) {
             item(key = "saved-header") {
-                SmallTitle("已保存订阅")
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(end = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    SmallTitle("已保存订阅")
+                    if (snapshot.profiles.count { it.url.isNotBlank() } > 1) {
+                        TextButton(
+                            text = "全部更新",
+                            onClick = client::refreshAllProfiles,
+                        )
+                    }
+                }
             }
             items(snapshot.profiles, key = { it.id }) { prof ->
                 val quota = if (prof.totalBytes > 0L) {
                     " · ${formatNetoBytes(prof.usedBytes)} / ${formatNetoBytes(prof.totalBytes)}"
+                } else ""
+                val fmtTag = if (prof.url.isNotBlank()) {
+                    if (prof.flag.equals("meta", ignoreCase = true)) "Meta · " else "Aerion · "
                 } else ""
                 Card(
                     modifier = Modifier
@@ -160,11 +195,17 @@ fun NetoProfilesPane(
                 ) {
                     RadioButtonPreference(
                         title = prof.name,
-                        summary = "${prof.nodeCount} 节点 · ${prof.ruleCount} 规则$quota",
+                        summary = "$fmtTag${prof.nodeCount} 节点 · ${prof.ruleCount} 规则$quota",
                         selected = prof.active,
                         onClick = { client.selectProfile(prof.id) },
                         endActions = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(
+                                    onClick = { editingProfile = prof },
+                                    modifier = Modifier.size(34.dp),
+                                ) {
+                                    Text("✎")
+                                }
                                 if (prof.url.isNotBlank()) {
                                     IconButton(
                                         onClick = { client.refreshProfile(prof.id) },
@@ -181,6 +222,84 @@ fun NetoProfilesPane(
                                 }
                             }
                         },
+                    )
+                }
+            }
+        }
+    }
+
+    val editing = editingProfile
+    if (editing != null) {
+        var editName by remember(editing.id) { mutableStateOf(editing.name) }
+        var editUrl by remember(editing.id) { mutableStateOf(editing.url) }
+        var editFlagIdx by remember(editing.id) {
+            mutableIntStateOf(flagOptions.indexOfFirst { it.first.equals(editing.flag, ignoreCase = true) }.coerceAtLeast(0))
+        }
+        val intervals = listOf(15 to "每 15 分钟", 30 to "每 30 分钟", 60 to "每 1 小时", 360 to "每 6 小时", 1440 to "每 24 小时", 0 to "手动更新")
+        var editAutoIdx by remember(editing.id) {
+            mutableIntStateOf(intervals.indexOfFirst { it.first == editing.autoUpdateMins }.let { if (it >= 0) it else 2 })
+        }
+        OverlayDialog(
+            show = true,
+            title = "编辑订阅",
+            onDismissRequest = { editingProfile = null },
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                TextField(
+                    value = editName,
+                    onValueChange = { editName = it },
+                    label = "订阅名称",
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (editing.url.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    TextField(
+                        value = editUrl,
+                        onValueChange = { editUrl = it },
+                        label = "订阅地址",
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OverlayDropdownPreference(
+                        title = "订阅格式",
+                        summary = flagOptions[editFlagIdx].second,
+                        items = flagOptions.map { it.second },
+                        selectedIndex = editFlagIdx,
+                        onSelectedIndexChange = { editFlagIdx = it },
+                    )
+                    OverlayDropdownPreference(
+                        title = "更新周期",
+                        summary = intervals[editAutoIdx].second,
+                        items = intervals.map { it.second },
+                        selectedIndex = editAutoIdx,
+                        onSelectedIndexChange = { editAutoIdx = it },
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+                Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    TextButton(
+                        text = "取消",
+                        onClick = { editingProfile = null },
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    TextButton(
+                        text = "保存",
+                        onClick = {
+                            client.updateProfile(
+                                id = editing.id,
+                                name = editName.trim(),
+                                url = if (editing.url.isNotBlank()) editUrl.trim() else null,
+                                flag = if (editing.url.isNotBlank()) flagOptions[editFlagIdx].first else null,
+                                autoUpdateMins = if (editing.url.isNotBlank()) intervals[editAutoIdx].first else null,
+                            ) {
+                                editingProfile = null
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.textButtonColorsPrimary(),
                     )
                 }
             }

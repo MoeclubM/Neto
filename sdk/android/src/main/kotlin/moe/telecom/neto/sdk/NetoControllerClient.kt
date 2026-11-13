@@ -41,6 +41,9 @@ class NetoControllerClient(
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
 
+    private val _checkingConnectivity = MutableStateFlow(false)
+    val checkingConnectivity: StateFlow<Boolean> = _checkingConnectivity.asStateFlow()
+
     private var pollJob: Job? = null
 
     init {
@@ -144,11 +147,110 @@ class NetoControllerClient(
         }
     }
 
+    fun testGroupNodes(groupName: String) {
+        scope.launch(Dispatchers.IO) {
+            runCatching { NetoBridge.call("test_group_nodes", JSONObject().put("group_name", groupName)) }
+                .onFailure { _actionError.value = it.message }
+            runCatching { refreshSnapshotNow() }
+        }
+    }
+
     fun probeTunnelNow() {
         scope.launch(Dispatchers.IO) {
             runCatching { NetoBridge.call("probe_tunnel") }
             runCatching { refreshSnapshotNow() }
         }
+    }
+
+    fun checkConnectivity() {
+        if (_checkingConnectivity.value) return
+        scope.launch {
+            _checkingConnectivity.value = true
+            _actionError.value = null
+            try {
+                withContext(Dispatchers.IO) {
+                    NetoBridge.call("check_connectivity")
+                    refreshSnapshotNow()
+                }
+            } catch (err: Throwable) {
+                _actionError.value = err.message
+            } finally {
+                _checkingConnectivity.value = false
+            }
+        }
+    }
+
+    suspend fun fetchConnections(): NetoConnectionsSnapshot = withContext(Dispatchers.IO) {
+        runCatching {
+            val obj = NetoBridge.call("list_connections").getJSONObject("result")
+            val arr = obj.optJSONArray("active")
+            val active = if (arr == null) emptyList() else (0 until arr.length()).mapNotNull { i ->
+                val c = arr.optJSONObject(i) ?: return@mapNotNull null
+                NetoActiveConnection(
+                    id = c.optLong("id", 0L),
+                    host = c.optString("host", ""),
+                    network = c.optString("network", "tcp"),
+                    rule = c.optString("rule", ""),
+                    outbound = c.optString("outbound", ""),
+                    uploadBytes = c.optLong("upload_bytes", 0L),
+                    downloadBytes = c.optLong("download_bytes", 0L),
+                    startedAtMs = c.optLong("started_at_ms", 0L),
+                )
+            }
+            NetoConnectionsSnapshot(
+                active = active,
+                totalUploadBytes = obj.optLong("total_upload_bytes", 0L),
+                totalDownloadBytes = obj.optLong("total_download_bytes", 0L),
+            )
+        }.getOrDefault(NetoConnectionsSnapshot())
+    }
+
+    fun closeConnection(id: Long) {
+        scope.launch(Dispatchers.IO) {
+            runCatching { NetoBridge.call("close_connection", JSONObject().put("id", id)) }
+        }
+    }
+
+    fun closeAllConnections() {
+        scope.launch(Dispatchers.IO) {
+            runCatching { NetoBridge.call("close_all_connections") }
+            runCatching { refreshSnapshotNow() }
+        }
+    }
+
+    suspend fun fetchRules(filter: String = "", limit: Int = 300): NetoRulesListResult = withContext(Dispatchers.IO) {
+        runCatching {
+            val obj = NetoBridge.call(
+                "list_rules",
+                JSONObject().put("filter", filter).put("limit", limit),
+            ).getJSONObject("result")
+            val arr = obj.optJSONArray("items")
+            val items = if (arr == null) emptyList() else (0 until arr.length()).mapNotNull { i ->
+                val r = arr.optJSONObject(i) ?: return@mapNotNull null
+                NetoRuleItem(
+                    index = r.optInt("index", i),
+                    ruleType = r.optString("rule_type", ""),
+                    payload = r.optString("payload", ""),
+                    target = r.optString("target", ""),
+                    raw = r.optString("raw", ""),
+                )
+            }
+            NetoRulesListResult(total = obj.optInt("total", items.size), items = items)
+        }.getOrDefault(NetoRulesListResult())
+    }
+
+    suspend fun testRoute(target: String, network: String = "tcp"): NetoRouteTestResult = withContext(Dispatchers.IO) {
+        val obj = NetoBridge.call(
+            "test_route",
+            JSONObject().put("target", target).put("network", network),
+        ).getJSONObject("result")
+        NetoRouteTestResult(
+            target = obj.optString("target", target),
+            network = obj.optString("network", network),
+            decision = obj.optString("decision", ""),
+            outbound = obj.optString("outbound", "").takeIf { it.isNotBlank() && it != "null" },
+            matchedRule = obj.optString("matched_rule", ""),
+        )
     }
 
     fun setRoutingMode(mode: String) {
@@ -173,7 +275,13 @@ class NetoControllerClient(
         }
     }
 
-    fun addRemoteProfile(name: String, url: String, autoUpdateMins: Int = 60, onDone: (() -> Unit)? = null) {
+    fun addRemoteProfile(
+        name: String,
+        url: String,
+        autoUpdateMins: Int = 60,
+        flag: String = "aerion",
+        onDone: (() -> Unit)? = null,
+    ) {
         scope.launch {
             _busy.value = true
             _actionError.value = null
@@ -184,7 +292,7 @@ class NetoControllerClient(
                         JSONObject()
                             .put("name", name)
                             .put("url", url)
-                            .put("flag", "aerion")
+                            .put("flag", flag.ifBlank { "aerion" })
                             .put("auto_update_mins", autoUpdateMins),
                     ).getJSONObject("result")
                     _snapshot.value = NetoSnapshot.fromJson(res.getJSONObject("snapshot"))
@@ -196,6 +304,46 @@ class NetoControllerClient(
                 _busy.value = false
             }
         }
+    }
+
+    fun refreshAllProfiles() {
+        scope.launch {
+            _busy.value = true
+            _actionError.value = null
+            try {
+                withContext(Dispatchers.IO) {
+                    val res = NetoBridge.call("refresh_all_profiles").getJSONObject("result")
+                    _snapshot.value = NetoSnapshot.fromJson(res.getJSONObject("snapshot"))
+                }
+            } catch (err: Throwable) {
+                _actionError.value = err.message
+            } finally {
+                _busy.value = false
+            }
+        }
+    }
+
+    fun updateProfile(
+        id: String,
+        name: String? = null,
+        url: String? = null,
+        flag: String? = null,
+        autoUpdateMins: Int? = null,
+        yaml: String? = null,
+        onDone: (() -> Unit)? = null,
+    ) {
+        val params = JSONObject().put("id", id)
+        if (name != null) params.put("name", name)
+        if (url != null) params.put("url", url)
+        if (flag != null) params.put("flag", flag)
+        if (autoUpdateMins != null) params.put("auto_update_mins", autoUpdateMins)
+        if (yaml != null) params.put("yaml", yaml)
+        runCall("update_profile", params, onDone)
+    }
+
+    suspend fun getProfileYaml(id: String? = null): String = withContext(Dispatchers.IO) {
+        val params = JSONObject().apply { if (!id.isNullOrBlank()) put("id", id) }
+        NetoBridge.call("get_profile_yaml", params).getJSONObject("result").optString("yaml", "")
     }
 
     fun importLocalProfile(name: String, yaml: String, onDone: (() -> Unit)? = null) {
@@ -326,10 +474,17 @@ class NetoControllerClient(
         runCall("reset_dashboard_widgets", JSONObject())
     }
 
-    fun refreshLogs() {
+    fun refreshLogs(level: String? = null, filter: String? = null, limit: Int = 200) {
         scope.launch(Dispatchers.IO) {
             runCatching {
-                val arr = NetoBridge.call("logs", JSONObject().put("limit", 150)).getJSONArray("result")
+                val params = JSONObject().put("limit", limit)
+                if (!level.isNullOrBlank() && !level.equals("all", ignoreCase = true)) {
+                    params.put("level", level)
+                }
+                if (!filter.isNullOrBlank()) {
+                    params.put("filter", filter)
+                }
+                val arr = NetoBridge.call("logs", params).getJSONArray("result")
                 val items = (0 until arr.length()).mapNotNull { i ->
                     val o = arr.optJSONObject(i) ?: return@mapNotNull null
                     NetoLogEntry(

@@ -69,18 +69,33 @@ impl HttpProxyBridge {
 }
 
 async fn handle_http_client(mut client: TcpStream, socks_addr: SocketAddr) -> Result<()> {
+    let _ = client.set_nodelay(true);
     let mut buf = Vec::with_capacity(2048);
     let mut temp = [0u8; 2048];
+    let first_n = client.read(&mut temp).await?;
+    if first_n == 0 {
+        return Ok(());
+    }
+    if temp[0] == 0x05 {
+        let mut remote = TcpStream::connect(socks_addr)
+            .await
+            .with_context(|| format!("connect local SOCKS5 {socks_addr}"))?;
+        let _ = remote.set_nodelay(true);
+        remote.write_all(&temp[..first_n]).await?;
+        let _ = copy_bidirectional(&mut client, &mut remote).await;
+        return Ok(());
+    }
+    buf.extend_from_slice(&temp[..first_n]);
     let header_end = loop {
+        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos + 4;
+        }
+        ensure!(buf.len() <= 32 * 1024, "HTTP proxy header exceeds 32 KiB");
         let n = client.read(&mut temp).await?;
         if n == 0 {
             return Ok(());
         }
         buf.extend_from_slice(&temp[..n]);
-        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-            break pos + 4;
-        }
-        ensure!(buf.len() <= 32 * 1024, "HTTP proxy header exceeds 32 KiB");
     };
 
     let header_text = std::str::from_utf8(&buf[..header_end]).context("HTTP header is not UTF-8")?;

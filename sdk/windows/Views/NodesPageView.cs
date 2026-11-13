@@ -12,16 +12,24 @@ public sealed class NodesPageView
     public Grid Root { get; }
     private readonly NetoClient _client;
     private readonly TextBox _searchBox;
+    private readonly ComboBox _protoCombo;
     private readonly TextBlock _countLabel;
     private readonly Button _sortDefaultBtn;
     private readonly Button _sortLatencyBtn;
     private readonly Button _sortNameBtn;
+    private readonly Button _locateBtn;
     private readonly Button _testAllBtn;
     private readonly StackPanel _groupsPanel;
     private readonly Grid _nodesGrid;
     private readonly HashSet<int> _testingIndices = [];
+    private readonly HashSet<string> _testingGroups = [];
+    private List<string> _protoOptions = [""];
+    private FrameworkElement? _selectedCardElement;
+    private bool _syncingProto;
     private string _filter = "";
+    private string _protoFilter = "";
     private string _lastSig = "";
+    private string _lastProtoListSig = "";
 
     public NodesPageView(NetoClient client)
     {
@@ -38,6 +46,8 @@ public sealed class NodesPageView
             ColumnSpacing = 8,
         };
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(124) });
+        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -51,6 +61,17 @@ public sealed class NodesPageView
             _lastSig = "";
             ApplySnapshot(_client.Snapshot);
         };
+        _protoCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
+        _protoCombo.Items.Add("全部协议");
+        _protoCombo.SelectedIndex = 0;
+        _protoCombo.SelectionChanged += (_, _) =>
+        {
+            if (_syncingProto || _protoCombo.SelectedIndex < 0) return;
+            var idx = Math.Clamp(_protoCombo.SelectedIndex, 0, _protoOptions.Count - 1);
+            _protoFilter = _protoOptions[idx];
+            _lastSig = "";
+            ApplySnapshot(_client.Snapshot);
+        };
         _countLabel = new TextBlock
         {
             FontSize = 12,
@@ -61,23 +82,43 @@ public sealed class NodesPageView
         _sortDefaultBtn = new Button { Content = "默认" };
         _sortLatencyBtn = new Button { Content = "延迟" };
         _sortNameBtn = new Button { Content = "名称" };
+        _locateBtn = new Button { Content = "定位" };
         _testAllBtn = new Button { Content = "批量测速" };
 
         _sortDefaultBtn.Click += async (_, _) => await _client.SetNodeSortAsync("default");
         _sortLatencyBtn.Click += async (_, _) => await _client.SetNodeSortAsync("latency");
         _sortNameBtn.Click += async (_, _) => await _client.SetNodeSortAsync("name");
+        _locateBtn.Click += (_, _) =>
+        {
+            if (!string.IsNullOrEmpty(_filter) || !string.IsNullOrEmpty(_protoFilter))
+            {
+                _searchBox.Text = "";
+                _syncingProto = true;
+                _protoCombo.SelectedIndex = 0;
+                _syncingProto = false;
+                _filter = "";
+                _protoFilter = "";
+                _lastSig = "";
+                ApplySnapshot(_client.Snapshot);
+            }
+            _selectedCardElement?.StartBringIntoView();
+        };
         _testAllBtn.Click += async (_, _) => await _client.TestAllNodesAsync();
 
-        Grid.SetColumn(_countLabel, 1);
-        Grid.SetColumn(_sortDefaultBtn, 2);
-        Grid.SetColumn(_sortLatencyBtn, 3);
-        Grid.SetColumn(_sortNameBtn, 4);
-        Grid.SetColumn(_testAllBtn, 5);
+        Grid.SetColumn(_protoCombo, 1);
+        Grid.SetColumn(_countLabel, 2);
+        Grid.SetColumn(_sortDefaultBtn, 3);
+        Grid.SetColumn(_sortLatencyBtn, 4);
+        Grid.SetColumn(_sortNameBtn, 5);
+        Grid.SetColumn(_locateBtn, 6);
+        Grid.SetColumn(_testAllBtn, 7);
         bar.Children.Add(_searchBox);
+        bar.Children.Add(_protoCombo);
         bar.Children.Add(_countLabel);
         bar.Children.Add(_sortDefaultBtn);
         bar.Children.Add(_sortLatencyBtn);
         bar.Children.Add(_sortNameBtn);
+        bar.Children.Add(_locateBtn);
         bar.Children.Add(_testAllBtn);
 
         _groupsPanel = new StackPanel { Spacing = 8 };
@@ -106,14 +147,51 @@ public sealed class NodesPageView
         NetoUiFactory.ApplyPrimaryButton(_sortNameBtn, snap.NodeSortMode == "name");
         _testAllBtn.Content = snap.NodesTesting ? "测速中..." : "批量测速";
         _testAllBtn.IsEnabled = !snap.NodesTesting && snap.Nodes.Count > 0;
+        _locateBtn.IsEnabled = snap.Nodes.Count > 0;
 
-        var visible = string.IsNullOrEmpty(_filter)
-            ? snap.Nodes
-            : snap.Nodes.Where(n =>
-                n.Name.ToLowerInvariant().Contains(_filter) ||
-                n.ProtocolLabel.ToLowerInvariant().Contains(_filter) ||
-                n.Tags.Any(t => t.ToLowerInvariant().Contains(_filter))).ToList();
-        _countLabel.Text = string.IsNullOrEmpty(_filter)
+        var distinctProtos = snap.Nodes
+            .Select(n => n.ProtocolLabel)
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var protoSig = string.Join(",", distinctProtos);
+        if (_lastProtoListSig != protoSig)
+        {
+            _lastProtoListSig = protoSig;
+            _syncingProto = true;
+            _protoOptions = [""];
+            _protoCombo.Items.Clear();
+            _protoCombo.Items.Add("全部协议");
+            foreach (var p in distinctProtos)
+            {
+                _protoOptions.Add(p);
+                _protoCombo.Items.Add(p);
+            }
+            var existingIdx = _protoOptions.FindIndex(p => string.Equals(p, _protoFilter, StringComparison.OrdinalIgnoreCase));
+            if (existingIdx < 0)
+            {
+                _protoFilter = "";
+                existingIdx = 0;
+            }
+            _protoCombo.SelectedIndex = existingIdx;
+            _syncingProto = false;
+        }
+
+        var visible = snap.Nodes.Where(n =>
+        {
+            if (!string.IsNullOrEmpty(_protoFilter) && !string.Equals(n.ProtocolLabel, _protoFilter, StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (!string.IsNullOrEmpty(_filter))
+            {
+                return n.Name.ToLowerInvariant().Contains(_filter) ||
+                       n.ProtocolLabel.ToLowerInvariant().Contains(_filter) ||
+                       n.Tags.Any(t => t.ToLowerInvariant().Contains(_filter));
+            }
+            return true;
+        }).ToList();
+
+        _countLabel.Text = string.IsNullOrEmpty(_filter) && string.IsNullOrEmpty(_protoFilter)
             ? $"{snap.Nodes.Count} 节点"
             : $"{visible.Count} / {snap.Nodes.Count}";
 
@@ -121,14 +199,17 @@ public sealed class NodesPageView
             snap.NodeSortMode,
             snap.SelectedNodeIndex,
             _filter,
+            _protoFilter,
             string.Join(",", _testingIndices.OrderBy(x => x)),
-            string.Join(",", snap.ProxyGroups.Select(g => $"{g.Name}:{g.Selected}")),
+            string.Join(",", _testingGroups.OrderBy(x => x)),
+            string.Join(",", snap.ProxyGroups.Select(g => $"{g.Name}:{g.GroupType}:{g.Selected}:{g.Now}")),
             string.Join(",", snap.Nodes.Select(n => $"{n.Index}:{n.LatencyMs}:{n.LastError != null}"))
         );
         if (_lastSig == sig) return;
         _lastSig = sig;
 
         _groupsPanel.Children.Clear();
+        _selectedCardElement = null;
         var nonEmptyGroups = snap.ProxyGroups.Where(g => g.Proxies.Count > 0).ToList();
         if (nonEmptyGroups.Count > 0)
         {
@@ -142,28 +223,84 @@ public sealed class NodesPageView
             for (var i = 0; i < nonEmptyGroups.Count; i++)
             {
                 var grp = nonEmptyGroups[i];
-                var combo = new ComboBox
-                {
-                    Header = grp.Name,
-                    HorizontalAlignment = HorizontalAlignment.Stretch,
-                };
-                foreach (var p in grp.Proxies) combo.Items.Add(p);
-                var target = grp.Selected ?? grp.Proxies[0];
-                var currentSelected = target;
-                combo.SelectedItem = combo.Items.Contains(target) ? target : combo.Items[0];
                 var groupName = grp.Name;
-                combo.SelectionChanged += async (_, _) =>
+                var isGrpTesting = _testingGroups.Contains(groupName);
+                var itemBox = new StackPanel { Spacing = 4 };
+
+                var grpHeader = new Grid { ColumnSpacing = 6 };
+                grpHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                grpHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                grpHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                var grpTitleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+                grpTitleRow.Children.Add(new TextBlock
                 {
-                    if (combo.SelectedItem is string s && s != currentSelected)
+                    Text = grp.Name,
+                    FontSize = 12,
+                    FontWeight = FontWeights.SemiBold,
+                    VerticalAlignment = VerticalAlignment.Center,
+                });
+                grpTitleRow.Children.Add(NetoUiFactory.CreateTagBadge(grp.GroupTypeLabel));
+
+                var grpTestBtn = new Button
+                {
+                    Content = isGrpTesting ? "测速中..." : "测速",
+                    FontSize = 11,
+                    Padding = new Thickness(8, 2, 8, 2),
+                    IsEnabled = !isGrpTesting && !snap.NodesTesting,
+                };
+                grpTestBtn.Click += async (_, _) =>
+                {
+                    _testingGroups.Add(groupName);
+                    _lastSig = "";
+                    ApplySnapshot(_client.Snapshot);
+                    try { await _client.TestGroupNodesAsync(groupName); }
+                    finally
                     {
-                        currentSelected = s;
-                        await _client.SelectGroupProxyAsync(groupName, s);
+                        _testingGroups.Remove(groupName);
+                        _lastSig = "";
+                        ApplySnapshot(_client.Snapshot);
                     }
                 };
-                Grid.SetRow(combo, i / 2);
-                Grid.SetColumn(combo, i % 2);
-                if (i == nonEmptyGroups.Count - 1 && nonEmptyGroups.Count % 2 == 1) Grid.SetColumnSpan(combo, 2);
-                gGrid.Children.Add(combo);
+                Grid.SetColumn(grpTestBtn, 2);
+                grpHeader.Children.Add(grpTitleRow);
+                grpHeader.Children.Add(grpTestBtn);
+                itemBox.Children.Add(grpHeader);
+
+                if (grp.IsManualSelect)
+                {
+                    var combo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
+                    foreach (var p in grp.Proxies) combo.Items.Add(p);
+                    var target = grp.Now ?? grp.Selected ?? grp.Proxies[0];
+                    var currentSelected = target;
+                    combo.SelectedItem = combo.Items.Contains(target) ? target : combo.Items[0];
+                    combo.SelectionChanged += async (_, _) =>
+                    {
+                        if (combo.SelectedItem is string s && s != currentSelected)
+                        {
+                            currentSelected = s;
+                            await _client.SelectGroupProxyAsync(groupName, s);
+                        }
+                    };
+                    itemBox.Children.Add(combo);
+                }
+                else
+                {
+                    var resolvedNow = grp.Now ?? grp.Selected ?? grp.Proxies[0];
+                    var autoCard = NetoUiFactory.CreateCard(new TextBlock
+                    {
+                        Text = $"当前命中：{resolvedNow}（共 {grp.Proxies.Count} 项）",
+                        FontSize = 12,
+                        TextTrimming = TextTrimming.CharacterEllipsis,
+                        Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                    }, new Thickness(10, 7, 10, 7));
+                    itemBox.Children.Add(autoCard);
+                }
+
+                Grid.SetRow(itemBox, i / 2);
+                Grid.SetColumn(itemBox, i % 2);
+                if (i == nonEmptyGroups.Count - 1 && nonEmptyGroups.Count % 2 == 1) Grid.SetColumnSpan(itemBox, 2);
+                gGrid.Children.Add(itemBox);
             }
             gCardStack.Children.Add(gGrid);
             _groupsPanel.Children.Add(NetoUiFactory.CreateCard(gCardStack));
@@ -274,6 +411,7 @@ public sealed class NodesPageView
             {
                 card.BorderBrush = NetoUiFactory.BrushResource("AccentFillColorDefaultBrush", Color.FromArgb(255, 0, 120, 212));
                 card.BorderThickness = new Thickness(1.5);
+                _selectedCardElement = card;
             }
             Grid.SetRow(card, i / 2);
             Grid.SetColumn(card, i % 2);

@@ -32,6 +32,8 @@ public sealed class NetoWidgetItem
         "outbound_mode" => "出站模式",
         "current_outbound" => "当前节点",
         "network_takeover" => "网络接管",
+        "active_connections" => "活跃会话",
+        "exit_check" => "出口检测",
         "traffic_usage" => "流量统计",
         "profiles_summary" => "订阅概览",
         "latency_probe" => "连通延迟",
@@ -98,9 +100,72 @@ public sealed class NetoNodeItem
 public sealed class NetoProxyGroup
 {
     [JsonPropertyName("name")] public string Name { get; set; } = "";
-    [JsonPropertyName("kind")] public string Kind { get; set; } = "select";
+    [JsonPropertyName("group_type")] public string GroupType { get; set; } = "select";
     [JsonPropertyName("proxies")] public List<string> Proxies { get; set; } = [];
     [JsonPropertyName("selected")] public string? Selected { get; set; }
+    [JsonPropertyName("now")] public string? Now { get; set; }
+
+    [JsonIgnore]
+    public bool IsManualSelect => string.Equals(GroupType, "select", StringComparison.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public string GroupTypeLabel => GroupType.ToLowerInvariant() switch
+    {
+        "url-test" => "自动测速",
+        "fallback" => "故障转移",
+        "load-balance" => "负载均衡",
+        _ => "手动选择",
+    };
+}
+
+public sealed class NetoActiveConnection
+{
+    [JsonPropertyName("id")] public ulong Id { get; set; }
+    [JsonPropertyName("host")] public string Host { get; set; } = "";
+    [JsonPropertyName("network")] public string Network { get; set; } = "tcp";
+    [JsonPropertyName("rule")] public string Rule { get; set; } = "";
+    [JsonPropertyName("outbound")] public string Outbound { get; set; } = "";
+    [JsonPropertyName("upload_bytes")] public ulong UploadBytes { get; set; }
+    [JsonPropertyName("download_bytes")] public ulong DownloadBytes { get; set; }
+    [JsonPropertyName("started_at_ms")] public ulong StartedAtMs { get; set; }
+}
+
+public sealed class NetoConnectionsSnapshot
+{
+    [JsonPropertyName("active")] public List<NetoActiveConnection> Active { get; set; } = [];
+    [JsonPropertyName("total_upload_bytes")] public ulong TotalUploadBytes { get; set; }
+    [JsonPropertyName("total_download_bytes")] public ulong TotalDownloadBytes { get; set; }
+}
+
+public sealed class NetoConnectivityTarget
+{
+    [JsonPropertyName("name")] public string Name { get; set; } = "";
+    [JsonPropertyName("latency_ms")] public ulong? LatencyMs { get; set; }
+    [JsonPropertyName("ok")] public bool Ok { get; set; }
+}
+
+public sealed class NetoNetworkCheckResult
+{
+    [JsonPropertyName("exit_ip")] public string? ExitIp { get; set; }
+    [JsonPropertyName("exit_country")] public string? ExitCountry { get; set; }
+    [JsonPropertyName("exit_isp")] public string? ExitIsp { get; set; }
+    [JsonPropertyName("targets")] public List<NetoConnectivityTarget> Targets { get; set; } = [];
+    [JsonPropertyName("checked_at_ms")] public ulong CheckedAtMs { get; set; }
+}
+
+public sealed class NetoRuleItem
+{
+    [JsonPropertyName("index")] public int Index { get; set; }
+    [JsonPropertyName("rule_type")] public string RuleType { get; set; } = "";
+    [JsonPropertyName("payload")] public string Payload { get; set; } = "";
+    [JsonPropertyName("target")] public string Target { get; set; } = "";
+    [JsonPropertyName("raw")] public string Raw { get; set; } = "";
+}
+
+public sealed class NetoRulesListResult
+{
+    [JsonPropertyName("total")] public int Total { get; set; }
+    [JsonPropertyName("items")] public List<NetoRuleItem> Items { get; set; } = [];
 }
 
 public sealed class NetoTelemetry
@@ -133,6 +198,7 @@ public sealed class NetoSnapshot
     [JsonPropertyName("rule_count")] public int RuleCount { get; set; }
     [JsonPropertyName("rules_preview")] public List<string> RulesPreview { get; set; } = [];
     [JsonPropertyName("telemetry")] public NetoTelemetry Telemetry { get; set; } = new();
+    [JsonPropertyName("last_network_check")] public NetoNetworkCheckResult? LastNetworkCheck { get; set; }
 
     [JsonIgnore]
     public NetoNodeItem? SelectedNode =>

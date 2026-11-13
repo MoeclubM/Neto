@@ -1,5 +1,7 @@
 pub mod config_compat;
+pub mod connections;
 pub mod dashboard;
+pub mod diagnostics;
 pub mod doh;
 pub mod engine;
 pub mod http_proxy;
@@ -11,7 +13,14 @@ pub mod runtime;
 pub mod state;
 pub mod telemetry;
 
+pub use connections::{
+    ActiveConnectionEntry, ConnectionsSnapshot, close_all_connections, close_connection,
+    snapshot_connections,
+};
 pub use dashboard::{DashboardWidgetId, DashboardWidgetItem};
+pub use diagnostics::{
+    ConnectivityTargetResult, NetworkCheckResult, RuleItem, parse_rule_items, run_network_check,
+};
 pub use engine::{NetoController, PlatformHooks, init_rustls_provider};
 pub use mihomo_sanitize::sanitize_mihomo_route_yaml;
 pub use profile::{

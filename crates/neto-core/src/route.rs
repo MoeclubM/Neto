@@ -1,4 +1,5 @@
 use crate::config_compat::node_to_proxy_config;
+use crate::connections::{RouteMatchFn, spawn_tracked_socks_ingress};
 use crate::mihomo_sanitize::sanitize_mihomo_route_yaml;
 use crate::protocol::{AerionProxyConfig, spawn_aerion_listener};
 use crate::runtime::{core_event_json, on_event, on_log, proxy_tun_bypass_cidrs};
@@ -15,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::Mutex as StdMutex;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -45,12 +46,17 @@ pub struct StartRouteRequest {
     pub selected_proxy: Option<String>,
     #[serde(default)]
     pub selected_node: Option<serde_json::Value>,
+    #[serde(default)]
+    pub group_targets: BTreeMap<String, String>,
+    #[serde(default)]
+    pub resolved_nodes: BTreeMap<String, serde_json::Value>,
 }
 
 pub(crate) struct RouteRuntime {
     pub socks_addr: SocketAddr,
     pub router_task: JoinHandle<Result<()>>,
     pub outbound_tasks: Vec<JoinHandle<Result<()>>>,
+    pub ingress_task: JoinHandle<()>,
     pub core: aerion::ProxyCore,
     pub bypass_cidrs: Vec<String>,
     pub rule_count: usize,
@@ -66,6 +72,8 @@ struct TestRouteRequest {
     global_proxy: Option<String>,
     #[serde(default)]
     selected_proxy: Option<String>,
+    #[serde(default)]
+    group_targets: BTreeMap<String, String>,
     target: String,
     #[serde(default)]
     network: Option<String>,
@@ -74,6 +82,7 @@ struct TestRouteRequest {
 struct RouteSession {
     router_task: JoinHandle<Result<()>>,
     outbound_tasks: Vec<JoinHandle<Result<()>>>,
+    ingress_task: JoinHandle<()>,
     _log_task: JoinHandle<()>,
     _event_task: JoinHandle<()>,
     _core: aerion::ProxyCore,
@@ -138,6 +147,7 @@ async fn spawn_route_outbounds(
     routes: &RouteTable,
     selected_proxy: Option<&str>,
     selected_node: Option<&serde_json::Value>,
+    resolved_nodes: &BTreeMap<String, serde_json::Value>,
 ) -> Result<(
     BTreeMap<String, SocketAddr>,
     Vec<JoinHandle<Result<()>>>,
@@ -150,7 +160,10 @@ async fn spawn_route_outbounds(
         let listener =
             bind_listener(&format!("route outbound {tag}"), ephemeral_loopback()).await?;
         let upstream = listener.local_addr()?;
-        let proxy = if selected_proxy == Some(tag.as_str()) {
+        let proxy = if let Some(node) = resolved_nodes.get(&tag) {
+            node_to_proxy_config(node, upstream)
+                .with_context(|| format!("resolve prepared route outbound {tag}"))?
+        } else if selected_proxy == Some(tag.as_str()) {
             let node = selected_node
                 .with_context(|| format!("selected route outbound {tag} missing selected_node"))?;
             node_to_proxy_config(node, upstream)
@@ -192,18 +205,75 @@ fn split_rule_action(rule: &str) -> Result<(&str, &str, &'static str)> {
     Ok((prefix.trim_end(), action.trim(), suffix))
 }
 
-fn apply_selected_proxy(config: &mut MihomoConfig, proxy: &str) -> Result<()> {
-    for rule in &mut config.rules {
-        let (prefix, action, suffix) = split_rule_action(rule)?;
-        if action.eq_ignore_ascii_case("DIRECT")
-            || action.eq_ignore_ascii_case("REJECT")
-            || action.eq_ignore_ascii_case("REJECT-DROP")
-            || action.eq_ignore_ascii_case("PASS")
-        {
+fn resolve_rule_target(
+    raw_action: &str,
+    group_targets: &BTreeMap<String, String>,
+    config: &MihomoConfig,
+    resolved_nodes: &BTreeMap<String, serde_json::Value>,
+    selected_proxy: Option<&str>,
+) -> String {
+    let mut cur = raw_action.trim().to_string();
+    let mut seen = BTreeSet::new();
+    for _ in 0..16 {
+        if cur.eq_ignore_ascii_case("DIRECT") {
+            return "DIRECT".to_string();
+        }
+        if cur.eq_ignore_ascii_case("REJECT") || cur.eq_ignore_ascii_case("REJECT-DROP") {
+            return "REJECT".to_string();
+        }
+        if cur.eq_ignore_ascii_case("PASS") {
+            return "PASS".to_string();
+        }
+        if !seen.insert(cur.clone()) {
+            break;
+        }
+        if let Some(next) = group_targets.get(&cur) {
+            cur = next.trim().to_string();
             continue;
         }
-        *rule = format!("{prefix},{proxy}{suffix}");
+        if let Some(grp) = config.proxy_group(&cur)
+            && let Some(first) = grp.proxies.first()
+        {
+            cur = first.trim().to_string();
+            continue;
+        }
+        break;
     }
+    if cur.eq_ignore_ascii_case("DIRECT") {
+        return "DIRECT".to_string();
+    }
+    if cur.eq_ignore_ascii_case("REJECT") || cur.eq_ignore_ascii_case("REJECT-DROP") {
+        return "REJECT".to_string();
+    }
+    if cur.eq_ignore_ascii_case("PASS") {
+        return "PASS".to_string();
+    }
+    if resolved_nodes.contains_key(&cur) || config.proxy(&cur).is_some() {
+        return cur;
+    }
+    if let Some(sel) = selected_proxy.map(str::trim).filter(|s| !s.is_empty()) {
+        return sel.to_string();
+    }
+    cur
+}
+
+fn apply_resolved_routing(
+    config: &mut MihomoConfig,
+    group_targets: &BTreeMap<String, String>,
+    resolved_nodes: &BTreeMap<String, serde_json::Value>,
+    selected_proxy: Option<&str>,
+) -> Result<()> {
+    let snapshot = config.clone();
+    for rule in &mut config.rules {
+        let (prefix, action, suffix) = split_rule_action(rule)?;
+        let target =
+            resolve_rule_target(action, group_targets, &snapshot, resolved_nodes, selected_proxy);
+        if target == "PASS" {
+            continue;
+        }
+        *rule = format!("{prefix},{target}{suffix}");
+    }
+    config.proxy_groups.clear();
     Ok(())
 }
 
@@ -212,14 +282,19 @@ fn compile_route_config(
     geoip_dir: Option<&str>,
     global_proxy: Option<&str>,
     selected_proxy: Option<&str>,
+    group_targets: &BTreeMap<String, String>,
+    resolved_nodes: &BTreeMap<String, serde_json::Value>,
 ) -> Result<(MihomoConfig, Option<PathBuf>, RouteTable)> {
     ensure!(!config_yaml.trim().is_empty(), "route config_yaml is empty");
     let mut config = parse_mihomo_config(config_yaml)?;
     let is_global = if let Some(proxy) = global_proxy.map(str::trim).filter(|v| !v.is_empty()) {
         apply_global_proxy(&mut config, proxy);
         true
-    } else if let Some(proxy) = selected_proxy.map(str::trim).filter(|v| !v.is_empty()) {
-        apply_selected_proxy(&mut config, proxy)?;
+    } else if selected_proxy.is_some()
+        || !group_targets.is_empty()
+        || !config.proxy_groups.is_empty()
+    {
+        apply_resolved_routing(&mut config, group_targets, resolved_nodes, selected_proxy)?;
         false
     } else {
         false
@@ -233,6 +308,48 @@ fn compile_route_config(
         .route_table_with_assets(assets_dir.as_deref())
         .context("compile mihomo route table")?;
     Ok((config, assets_dir, routes))
+}
+
+fn build_route_matcher(
+    config: &MihomoConfig,
+    assets_dir: Option<&std::path::Path>,
+    routes: &RouteTable,
+) -> RouteMatchFn {
+    let mut indexed_cfg = config.clone();
+    let mut rule_labels = Vec::with_capacity(config.rules.len());
+    for (idx, rule) in indexed_cfg.rules.iter_mut().enumerate() {
+        if let Ok((prefix, _, suffix)) = split_rule_action(rule) {
+            rule_labels.push(prefix.to_string());
+            *rule = format!("{prefix},__idx_{idx}{suffix}");
+        } else {
+            rule_labels.push(rule.clone());
+        }
+    }
+    let indexed_table = indexed_cfg
+        .route_table_with_assets(assets_dir)
+        .ok()
+        .map(Arc::new);
+    let routes_arc = Arc::new(routes.clone());
+    let labels_arc = Arc::new(rule_labels);
+    Arc::new(move |target, network| {
+        let outbound = match routes_arc.try_decide(target, network) {
+            Ok(RouteDecision::Direct) => "DIRECT".to_string(),
+            Ok(RouteDecision::Block) => "REJECT".to_string(),
+            Ok(RouteDecision::Proxy(tag)) => tag,
+            Err(_) => "DIRECT".to_string(),
+        };
+        let matched = indexed_table
+            .as_ref()
+            .and_then(|tbl| match tbl.try_decide(target, network).ok()? {
+                RouteDecision::Proxy(tag) => tag
+                    .strip_prefix("__idx_")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .and_then(|i| labels_arc.get(i).cloned()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "MATCH".to_string());
+        (matched, outbound)
+    })
 }
 
 fn ensure_geoip_baseline(config: &mut MihomoConfig) {
@@ -269,11 +386,13 @@ pub fn route_assets_dir(geoip_dir: Option<&str>) -> Option<PathBuf> {
 }
 
 pub(crate) async fn start_route_runtime(request: StartRouteRequest) -> Result<RouteRuntime> {
-    let (config, _, routes) = compile_route_config(
+    let (config, assets_dir, routes) = compile_route_config(
         &request.config_yaml,
         request.geoip_dir.as_deref(),
         request.global_proxy.as_deref(),
         request.selected_proxy.as_deref(),
+        &request.group_targets,
+        &request.resolved_nodes,
     )?;
     let outbound_tags = route_proxy_tags(&routes);
     let listen = ephemeral_loopback();
@@ -289,8 +408,11 @@ pub(crate) async fn start_route_runtime(request: StartRouteRequest) -> Result<Ro
         &routes,
         selected_proxy,
         request.selected_node.as_ref(),
+        &request.resolved_nodes,
     )
     .await?;
+    let matcher = build_route_matcher(&config, assets_dir.as_deref(), &routes);
+    let (tracked_addr, ingress_task) = spawn_tracked_socks_ingress(router_addr, matcher).await?;
     let core = aerion::ProxyCore::from_credentials("route", &[]);
     let route_config = RouteProxyConfig { routes, upstreams };
     let state = RouteProxyState::from_config(route_config).with_core(core.clone());
@@ -300,9 +422,10 @@ pub(crate) async fn start_route_runtime(request: StartRouteRequest) -> Result<Ro
             .context("run mihomo route proxy")
     });
     Ok(RouteRuntime {
-        socks_addr: router_addr,
+        socks_addr: tracked_addr,
         router_task,
         outbound_tasks,
+        ingress_task,
         core,
         bypass_cidrs,
         rule_count: config.rules.len(),
@@ -341,6 +464,7 @@ pub async fn start_route_from_json(input: &str) -> Result<String> {
             RouteSession {
                 router_task: runtime.router_task,
                 outbound_tasks: runtime.outbound_tasks,
+                ingress_task: runtime.ingress_task,
                 _log_task: log_task,
                 _event_task: event_task,
                 _core: runtime.core,
@@ -364,6 +488,7 @@ pub async fn stop_route(session_id: u64) -> Result<String> {
         .remove(&session_id)
         .with_context(|| format!("route session not found: {session_id}"))?;
     session._core.cancel_all_sessions();
+    session.ingress_task.abort();
     session.router_task.abort();
     for task in session.outbound_tasks {
         task.abort();
@@ -462,6 +587,8 @@ pub fn test_route_from_json(input: &str) -> Result<String> {
         request.geoip_dir.as_deref(),
         request.global_proxy.as_deref(),
         request.selected_proxy.as_deref(),
+        &request.group_targets,
+        &BTreeMap::new(),
     )?;
     let decision = routes.try_decide(&target, network)?;
 

@@ -49,6 +49,8 @@ pub struct ProxyGroupSummary {
     pub proxies: Vec<String>,
     #[serde(default)]
     pub selected: Option<String>,
+    #[serde(default)]
+    pub now: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +74,8 @@ pub struct ProfileRecord {
     #[serde(default)]
     pub route_config_yaml: Option<String>,
     #[serde(default)]
+    pub raw_yaml: Option<String>,
+    #[serde(default)]
     pub rule_count: usize,
     #[serde(default)]
     pub rules_preview: Vec<String>,
@@ -86,6 +90,7 @@ pub struct ParsedProfilePayload {
     pub nodes: Vec<NodeSummary>,
     pub proxy_groups: Vec<ProxyGroupSummary>,
     pub route_config_yaml: Option<String>,
+    pub raw_yaml: Option<String>,
     pub rule_count: usize,
     pub rules_preview: Vec<String>,
 }
@@ -498,15 +503,18 @@ async fn parse_yaml_profile_with_base(
                     .map(|seq| seq.iter().filter_map(yaml_str).collect::<Vec<_>>())
                     .unwrap_or_default();
                 let selected = proxies.first().cloned();
+                let now = selected.clone();
                 proxy_groups.push(ProxyGroupSummary {
                     name,
                     group_type,
                     proxies,
                     selected,
+                    now,
                 });
             }
         }
     }
+    recompute_proxy_groups(&nodes, &mut proxy_groups);
 
     ensure!(
         !nodes.is_empty() || !rules.is_empty(),
@@ -526,6 +534,7 @@ async fn parse_yaml_profile_with_base(
         nodes,
         proxy_groups,
         route_config_yaml,
+        raw_yaml: Some(text.trim().to_string()),
         rule_count: rules.len(),
         rules_preview,
     })
@@ -548,6 +557,7 @@ pub fn build_profile_from_raw_nodes(
         user_info,
         nodes,
         proxy_groups: Vec::new(),
+        raw_yaml: route_config_yaml.clone(),
         route_config_yaml,
         rule_count,
         rules_preview,
@@ -707,6 +717,88 @@ pub fn merge_preserved_latencies(
             node.latency_ms = Some(lat);
         }
     }
+}
+
+pub fn recompute_proxy_groups(nodes: &[NodeSummary], groups: &mut [ProxyGroupSummary]) {
+    let node_map: BTreeMap<&str, &NodeSummary> =
+        nodes.iter().map(|n| (n.name.as_str(), n)).collect();
+    for group in groups.iter_mut() {
+        let kind = group.group_type.trim().to_ascii_lowercase();
+        match kind.as_str() {
+            "url-test" | "load-balance" => {
+                let fastest = group
+                    .proxies
+                    .iter()
+                    .filter_map(|name| {
+                        let n = node_map.get(name.as_str())?;
+                        n.latency_ms.map(|ms| (ms, name.clone()))
+                    })
+                    .min_by_key(|(ms, _)| *ms)
+                    .map(|(_, name)| name);
+                let chosen = fastest
+                    .or_else(|| {
+                        group
+                            .selected
+                            .clone()
+                            .filter(|s| group.proxies.contains(s))
+                    })
+                    .or_else(|| group.proxies.first().cloned());
+                group.now = chosen.clone();
+                group.selected = chosen;
+            }
+            "fallback" => {
+                let any_tested = group.proxies.iter().any(|name| {
+                    node_map
+                        .get(name.as_str())
+                        .is_some_and(|n| n.latency_ms.is_some() || n.last_error.is_some())
+                });
+                let healthy = if any_tested {
+                    group
+                        .proxies
+                        .iter()
+                        .find(|name| {
+                            node_map
+                                .get(name.as_str())
+                                .is_some_and(|n| n.latency_ms.is_some() && n.last_error.is_none())
+                        })
+                        .cloned()
+                } else {
+                    None
+                };
+                let chosen = healthy.or_else(|| group.proxies.first().cloned());
+                group.now = chosen.clone();
+                group.selected = chosen;
+            }
+            _ => {
+                let valid = group
+                    .selected
+                    .clone()
+                    .filter(|s| group.proxies.contains(s))
+                    .or_else(|| group.proxies.first().cloned());
+                group.selected = valid.clone();
+                group.now = valid;
+            }
+        }
+    }
+}
+
+pub fn merge_preserved_groups(
+    previous: &[ProxyGroupSummary],
+    next: &mut [ProxyGroupSummary],
+    nodes: &[NodeSummary],
+) {
+    let prev_selected: BTreeMap<&str, &str> = previous
+        .iter()
+        .filter_map(|g| g.selected.as_deref().map(|s| (g.name.as_str(), s)))
+        .collect();
+    for group in next.iter_mut() {
+        if let Some(&saved) = prev_selected.get(group.name.as_str())
+            && group.proxies.iter().any(|p| p == saved)
+        {
+            group.selected = Some(saved.to_string());
+        }
+    }
+    recompute_proxy_groups(nodes, next);
 }
 
 #[cfg(test)]

@@ -29,6 +29,8 @@ data class NetoWidgetItem(
             "outbound_mode" -> "出站模式"
             "current_outbound" -> "当前节点"
             "network_takeover" -> "网络接管"
+            "active_connections" -> "活跃会话"
+            "exit_check" -> "出口检测"
             "traffic_usage" -> "流量统计"
             "profiles_summary" -> "订阅概览"
             "latency_probe" -> "连通延迟"
@@ -91,9 +93,94 @@ data class NetoNodeItem(
 
 data class NetoProxyGroup(
     val name: String,
-    val kind: String,
+    val groupType: String,
     val proxies: List<String>,
     val selected: String?,
+    val now: String? = null,
+) {
+    val isManualSelect: Boolean
+        get() = groupType.equals("select", ignoreCase = true)
+
+    val groupTypeLabel: String
+        get() = when (groupType.lowercase()) {
+            "url-test" -> "自动测速"
+            "fallback" -> "故障转移"
+            "load-balance" -> "负载均衡"
+            else -> "手动选择"
+        }
+}
+
+data class NetoActiveConnection(
+    val id: Long,
+    val host: String,
+    val network: String,
+    val rule: String,
+    val outbound: String,
+    val uploadBytes: Long,
+    val downloadBytes: Long,
+    val startedAtMs: Long,
+)
+
+data class NetoConnectionsSnapshot(
+    val active: List<NetoActiveConnection> = emptyList(),
+    val totalUploadBytes: Long = 0L,
+    val totalDownloadBytes: Long = 0L,
+)
+
+data class NetoConnectivityTarget(
+    val name: String,
+    val latencyMs: Long?,
+    val ok: Boolean,
+)
+
+data class NetoNetworkCheckResult(
+    val exitIp: String? = null,
+    val exitCountry: String? = null,
+    val exitIsp: String? = null,
+    val targets: List<NetoConnectivityTarget> = emptyList(),
+    val checkedAtMs: Long = 0L,
+) {
+    companion object {
+        fun fromJson(obj: JSONObject): NetoNetworkCheckResult {
+            val arr = obj.optJSONArray("targets")
+            val targets = if (arr == null) emptyList() else (0 until arr.length()).mapNotNull { i ->
+                val t = arr.optJSONObject(i) ?: return@mapNotNull null
+                NetoConnectivityTarget(
+                    name = t.optString("name", ""),
+                    latencyMs = if (t.isNull("latency_ms")) null else t.optLong("latency_ms", -1L).takeIf { it >= 0L },
+                    ok = t.optBoolean("ok", false),
+                )
+            }
+            return NetoNetworkCheckResult(
+                exitIp = obj.optString("exit_ip", "").takeIf { it.isNotBlank() && it != "null" },
+                exitCountry = obj.optString("exit_country", "").takeIf { it.isNotBlank() && it != "null" },
+                exitIsp = obj.optString("exit_isp", "").takeIf { it.isNotBlank() && it != "null" },
+                targets = targets,
+                checkedAtMs = obj.optLong("checked_at_ms", 0L),
+            )
+        }
+    }
+}
+
+data class NetoRuleItem(
+    val index: Int,
+    val ruleType: String,
+    val payload: String,
+    val target: String,
+    val raw: String,
+)
+
+data class NetoRulesListResult(
+    val total: Int = 0,
+    val items: List<NetoRuleItem> = emptyList(),
+)
+
+data class NetoRouteTestResult(
+    val target: String = "",
+    val network: String = "tcp",
+    val decision: String = "",
+    val outbound: String? = null,
+    val matchedRule: String = "",
 )
 
 data class NetoTelemetry(
@@ -124,6 +211,7 @@ data class NetoSnapshot(
     val ruleCount: Int = 0,
     val rulesPreview: List<String> = emptyList(),
     val telemetry: NetoTelemetry = NetoTelemetry(),
+    val lastNetworkCheck: NetoNetworkCheckResult? = null,
 ) {
     val selectedNode: NetoNodeItem?
         get() = nodes.firstOrNull { it.index == selectedNodeIndex } ?: nodes.firstOrNull()
@@ -229,9 +317,10 @@ data class NetoSnapshot(
                         val g = arr.optJSONObject(i) ?: return@mapNotNull null
                         NetoProxyGroup(
                             name = g.optString("name", ""),
-                            kind = g.optString("kind", "select"),
+                            groupType = g.optString("group_type", g.optString("kind", "select")),
                             proxies = g.optJSONArray("proxies").toStringList(),
                             selected = if (g.isNull("selected")) null else g.optString("selected", "").takeIf { it.isNotBlank() },
+                            now = if (g.isNull("now")) null else g.optString("now", "").takeIf { it.isNotBlank() },
                         )
                     }
                 },
@@ -251,6 +340,7 @@ data class NetoSnapshot(
                     intranetIpv4 = if (telObj.isNull("intranet_ipv4")) null else telObj.optString("intranet_ipv4", "").takeIf { it.isNotBlank() },
                     intranetIpv6 = if (telObj.isNull("intranet_ipv6")) null else telObj.optString("intranet_ipv6", "").takeIf { it.isNotBlank() },
                 ),
+                lastNetworkCheck = obj.optJSONObject("last_network_check")?.let(NetoNetworkCheckResult::fromJson),
             )
         }
     }

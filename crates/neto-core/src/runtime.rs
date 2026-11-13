@@ -1,4 +1,5 @@
 use crate::config_compat::node_to_proxy_config;
+use crate::connections::{RouteMatchFn, spawn_tracked_socks_ingress, static_route_matcher};
 use crate::http_proxy::connect_via_socks5;
 use crate::protocol::{AerionProxyConfig, spawn_aerion_listener};
 use crate::telemetry;
@@ -146,10 +147,28 @@ struct StartSocksRequest {
 }
 
 struct SocksSession {
+    _ingress_task: JoinHandle<()>,
     _task: JoinHandle<Result<()>>,
     _log_task: Option<JoinHandle<()>>,
     _event_task: Option<JoinHandle<()>>,
     _core: Option<aerion::ProxyCore>,
+}
+
+fn matcher_for_node(node: &Value) -> RouteMatchFn {
+    let proto = node
+        .get("type")
+        .or_else(|| node.get("protocol"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if proto.eq_ignore_ascii_case("direct") {
+        return static_route_matcher("DIRECT", "DIRECT");
+    }
+    let name = node
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("PROXY");
+    static_route_matcher("GLOBAL", name)
 }
 
 static NEXT_SOCKS_SESSION_ID: AtomicU64 = AtomicU64::new(1);
@@ -286,7 +305,9 @@ pub async fn start_socks_from_json(input: &str) -> Result<String> {
         serde_json::from_str(input).context("parse start SOCKS request")?;
     let log_bridge = aerion::LogBridge::new();
     let session_id = NEXT_SOCKS_SESSION_ID.fetch_add(1, Ordering::SeqCst);
-    let (socks_addr, task, core, _) = start_aerion_socks(request.node, true).await?;
+    let matcher = matcher_for_node(&request.node);
+    let (inner_socks, task, core, _) = start_aerion_socks(request.node, true).await?;
+    let (socks_addr, ingress_task) = spawn_tracked_socks_ingress(inner_socks, matcher).await?;
 
     let log_task = {
         let mut rx = log_bridge.subscribe();
@@ -312,6 +333,7 @@ pub async fn start_socks_from_json(input: &str) -> Result<String> {
         .insert(
             session_id,
             SocksSession {
+                _ingress_task: ingress_task,
                 _task: task,
                 _log_task: Some(log_task),
                 _event_task: event_task,
@@ -336,6 +358,7 @@ pub async fn stop_socks(session_id: u64) -> Result<String> {
     if let Some(core) = session._core {
         core.cancel_all_sessions();
     }
+    session._ingress_task.abort();
     session._task.abort();
     if let Some(task) = session._log_task {
         task.abort();
@@ -506,6 +529,7 @@ mod platform {
     struct VpnSession {
         shutdown: TunCancellationToken,
         proxy_tasks: Vec<JoinHandle<Result<()>>>,
+        ingress_task: JoinHandle<()>,
         _core: Option<aerion::ProxyCore>,
     }
 
@@ -525,16 +549,18 @@ mod platform {
             .tun_fd
             .ok_or_else(|| anyhow::anyhow!("tun_fd is required on Android"))?;
 
-        let (socks_addr, proxy_tasks, core) = match request.route {
+        let (socks_addr, proxy_tasks, ingress_task, core) = match request.route {
             Some(route_req) => {
                 let rt = crate::route::start_route_runtime(route_req).await?;
                 let mut tasks = rt.outbound_tasks;
                 tasks.push(rt.router_task);
-                (rt.socks_addr, tasks, Some(rt.core))
+                (rt.socks_addr, tasks, rt.ingress_task, Some(rt.core))
             }
             None => {
-                let (addr, task, core, _) = start_aerion_socks(request.node, true).await?;
-                (addr, vec![task], core)
+                let matcher = matcher_for_node(&request.node);
+                let (inner, task, core, _) = start_aerion_socks(request.node, true).await?;
+                let (tracked, itask) = spawn_tracked_socks_ingress(inner, matcher).await?;
+                (tracked, vec![task], itask, core)
             }
         };
 
@@ -578,6 +604,7 @@ mod platform {
                 VpnSession {
                     shutdown,
                     proxy_tasks,
+                    ingress_task,
                     _core: core.clone(),
                 },
             );
@@ -613,6 +640,7 @@ mod platform {
                 if let Some(core) = session._core {
                     core.cancel_all_sessions();
                 }
+                session.ingress_task.abort();
                 for t in session.proxy_tasks {
                     t.abort();
                 }
@@ -645,6 +673,7 @@ mod platform {
         if let Some(core) = session._core {
             core.cancel_all_sessions();
         }
+        session.ingress_task.abort();
         for t in session.proxy_tasks {
             t.abort();
         }
@@ -667,6 +696,7 @@ mod platform {
         shutdown: TunCancellationToken,
         finished: tokio::sync::oneshot::Receiver<std::result::Result<(), String>>,
         proxy_tasks: Vec<JoinHandle<Result<()>>>,
+        ingress_task: JoinHandle<()>,
         _log_task: Option<JoinHandle<()>>,
         _event_task: Option<JoinHandle<()>>,
         _core: Option<aerion::ProxyCore>,
@@ -710,25 +740,41 @@ mod platform {
             aerion::set_outbound_interface(iface);
         }
 
-        let (socks_addr, proxy_tasks, core, bypass_cidrs) = match request.route {
+        let (socks_addr, proxy_tasks, ingress_task, core, bypass_cidrs) = match request.route {
             Some(route_req) => match crate::route::start_route_runtime(route_req).await {
                 Ok(rt) => {
                     let mut tasks = rt.outbound_tasks;
                     tasks.push(rt.router_task);
-                    (rt.socks_addr, tasks, Some(rt.core), rt.bypass_cidrs)
+                    (
+                        rt.socks_addr,
+                        tasks,
+                        rt.ingress_task,
+                        Some(rt.core),
+                        rt.bypass_cidrs,
+                    )
                 }
                 Err(error) => {
                     clear_outbound_if_idle();
                     return Err(error);
                 }
             },
-            None => match start_aerion_socks(request.node, true).await {
-                Ok((addr, task, core, cidrs)) => (addr, vec![task], core, cidrs),
-                Err(error) => {
-                    clear_outbound_if_idle();
-                    return Err(error);
+            None => {
+                let matcher = matcher_for_node(&request.node);
+                match start_aerion_socks(request.node, true).await {
+                    Ok((inner, task, core, cidrs)) => match spawn_tracked_socks_ingress(inner, matcher).await {
+                        Ok((tracked, itask)) => (tracked, vec![task], itask, core, cidrs),
+                        Err(error) => {
+                            task.abort();
+                            clear_outbound_if_idle();
+                            return Err(error);
+                        }
+                    },
+                    Err(error) => {
+                        clear_outbound_if_idle();
+                        return Err(error);
+                    }
                 }
-            },
+            }
         };
 
         let mut tun_config = TunConfig::new(socks_proxy_url(socks_addr));
@@ -765,6 +811,7 @@ mod platform {
                 if let Some(core) = core {
                     core.cancel_all_sessions();
                 }
+                ingress_task.abort();
                 abort_tasks(proxy_tasks);
                 clear_outbound_if_idle();
                 return Err(error).context("spawn Aerion TUN runtime");
@@ -802,6 +849,7 @@ mod platform {
                     shutdown,
                     finished: finished_rx,
                     proxy_tasks,
+                    ingress_task,
                     _log_task: log_task,
                     _event_task: event_task,
                     _core: core,
@@ -822,6 +870,7 @@ mod platform {
                 if let Some(core) = session._core {
                     core.cancel_all_sessions();
                 }
+                session.ingress_task.abort();
                 abort_tasks(session.proxy_tasks);
                 if let Some(task) = session._log_task {
                     task.abort();
@@ -864,6 +913,7 @@ mod platform {
         if let Some(core) = session._core {
             core.cancel_all_sessions();
         }
+        session.ingress_task.abort();
         abort_tasks(session.proxy_tasks);
         if let Some(task) = session._log_task {
             task.abort();

@@ -3,7 +3,10 @@
 use crate::format::{format_bytes, format_speed};
 use adw::prelude::*;
 use gtk::prelude::*;
-use neto_core::{DashboardWidgetId, DashboardWidgetItem, EngineSnapshot, NetoController, RoutingMode};
+use neto_core::{
+    DashboardWidgetId, DashboardWidgetItem, EngineSnapshot, NetoController, RoutingMode,
+    close_all_connections,
+};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -13,6 +16,7 @@ use tokio::runtime::Handle;
 struct LiveWidgetRefs {
     speed_group: Option<adw::PreferencesGroup>,
     speed_area: Option<gtk::DrawingArea>,
+    active_conn_row: Option<adw::ActionRow>,
     traffic_row: Option<adw::ActionRow>,
     quota_row: Option<adw::ActionRow>,
     latency_group: Option<adw::PreferencesGroup>,
@@ -33,6 +37,7 @@ pub struct DashboardView {
     controller: Arc<NetoController>,
     rt: Handle,
     on_open_nodes: Rc<dyn Fn()>,
+    on_open_connections: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 impl DashboardView {
@@ -92,6 +97,7 @@ impl DashboardView {
             controller,
             rt,
             on_open_nodes,
+            on_open_connections: RefCell::new(None),
         });
 
         {
@@ -117,6 +123,10 @@ impl DashboardView {
         }
 
         view
+    }
+
+    pub fn set_on_open_connections(&self, cb: Rc<dyn Fn()>) {
+        *self.on_open_connections.borrow_mut() = Some(cb);
     }
 
     fn rebuild_customize_rows(&self, snap: &EngineSnapshot) {
@@ -185,15 +195,17 @@ impl DashboardView {
             .or_else(|| snap.nodes.first());
         let active_prof = snap.profiles.iter().find(|p| p.active);
         let layout_sig = format!(
-            "{:?}|{:?}|{}|{}|{}|{}|{:?}|{:?}",
+            "{:?}|{:?}|{}|{}|{}|{}|{}|{:?}|{:?}|{:?}",
             snap.settings.dashboard_widgets,
             snap.settings.routing_mode,
             snap.settings.system_proxy_enabled,
             snap.settings.tun_enabled,
+            snap.connection.connected,
             snap.connection.http_proxy_addr,
             snap.settings.node_test_url,
             selected_node.map(|n| (&n.name, &n.protocol_label, n.latency_ms)),
             active_prof.map(|p| (&p.id, &p.name, p.node_count, p.rule_count, p.total_bytes)),
+            snap.last_network_check.as_ref().map(|c| c.checked_at_ms),
         );
 
         if *self.last_layout_sig.borrow() != layout_sig {
@@ -303,6 +315,85 @@ impl DashboardView {
                     group.add(&row);
                     self.cards_box.append(&group);
                 }
+                DashboardWidgetId::ActiveConnections => {
+                    let group = adw::PreferencesGroup::builder().title("活跃会话").build();
+                    if snap.connection.connected {
+                        let close_btn = gtk::Button::with_label("断开全部");
+                        close_btn.add_css_class("flat");
+                        close_btn.connect_clicked(|_| {
+                            let _ = close_all_connections();
+                        });
+                        group.set_header_suffix(Some(&close_btn));
+                    }
+                    let open_cb = self.on_open_connections.borrow().clone();
+                    let row = adw::ActionRow::builder()
+                        .activatable(open_cb.is_some())
+                        .build();
+                    if let Some(cb) = open_cb {
+                        row.connect_activated(move |_| cb());
+                        row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+                    }
+                    group.add(&row);
+                    self.cards_box.append(&group);
+                    refs.active_conn_row = Some(row);
+                }
+                DashboardWidgetId::ExitCheck => {
+                    let group = adw::PreferencesGroup::builder().title("出口检测").build();
+                    let check_btn = gtk::Button::with_label("检测");
+                    check_btn.add_css_class("flat");
+                    let ctrl = self.controller.clone();
+                    let rt = self.rt.clone();
+                    check_btn.connect_clicked(move |btn| {
+                        btn.set_sensitive(false);
+                        let ctrl = ctrl.clone();
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        rt.spawn(async move {
+                            let _ = ctrl.check_connectivity().await;
+                            let _ = tx.send(());
+                        });
+                        let btn_c = btn.clone();
+                        gtk::glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
+                            if rx.try_recv().is_ok() {
+                                btn_c.set_sensitive(true);
+                                return gtk::glib::ControlFlow::Break;
+                            }
+                            gtk::glib::ControlFlow::Continue
+                        });
+                    });
+                    group.set_header_suffix(Some(&check_btn));
+                    let (title, sub) = match &snap.last_network_check {
+                        None => ("未检测".to_string(), "检测出口 IP 与站点延迟".to_string()),
+                        Some(res) => {
+                            let ip_parts: Vec<&str> = [
+                                res.exit_ip.as_deref(),
+                                res.exit_country.as_deref(),
+                                res.exit_isp.as_deref(),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                            let t_str = if ip_parts.is_empty() {
+                                "未识别出口 IP".to_string()
+                            } else {
+                                ip_parts.join(" · ")
+                            };
+                            let s_str = res
+                                .targets
+                                .iter()
+                                .map(|t| match t.latency_ms {
+                                    Some(ms) => format!("{} {ms}ms", t.name),
+                                    None => format!("{} 超时", t.name),
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" · ");
+                            (t_str, s_str)
+                        }
+                    };
+                    let row = adw::ActionRow::builder().title(&title).subtitle(&sub).build();
+                    group.add(&row);
+                    self.cards_box.append(&group);
+                }
                 DashboardWidgetId::NetworkTakeover => {
                     let group = adw::PreferencesGroup::builder().title("网络接管").build();
                     let sys_row = adw::SwitchRow::builder()
@@ -356,7 +447,7 @@ impl DashboardView {
                     let title = active.map(|p| p.name.as_str()).unwrap_or("未配置订阅");
                     let sub = active
                         .map(|p| format!("{} 个节点 · {} 条规则", p.node_count, p.rule_count))
-                        .unwrap_or_else(|| "前往订阅页导入配置".to_string());
+                        .unwrap_or_else(|| "暂无订阅".to_string());
                     let row = adw::ActionRow::builder().title(title).subtitle(&sub).build();
                     if let Some(prof) = active
                         && !prof.url.is_empty()
@@ -425,6 +516,14 @@ impl DashboardView {
         }
         if let Some(area) = &refs.speed_area {
             area.queue_draw();
+        }
+        if let Some(row) = &refs.active_conn_row {
+            row.set_title(&format!("并发 {} 个会话", snap.telemetry.active_sessions));
+            row.set_subtitle(&format!(
+                "累计 ↑ {} · ↓ {}",
+                format_bytes(snap.telemetry.upload_bytes),
+                format_bytes(snap.telemetry.download_bytes)
+            ));
         }
         if let Some(row) = &refs.traffic_row {
             row.set_title(&format!(

@@ -73,6 +73,7 @@ pub fn now_ms() -> u64 {
 }
 
 pub fn reset_session_telemetry() {
+    crate::connections::clear_connections();
     let mut inner = TELEMETRY.lock().expect("telemetry lock poisoned");
     inner.upload_bytes = 0;
     inner.download_bytes = 0;
@@ -141,12 +142,41 @@ pub fn push_log(level: &str, message: &str) {
 }
 
 pub fn list_logs(limit: usize) -> Vec<LogEntry> {
+    list_logs_filtered(limit, None, None)
+}
+
+pub fn list_logs_filtered(
+    limit: usize,
+    level_filter: Option<&str>,
+    keyword: Option<&str>,
+) -> Vec<LogEntry> {
     let inner = TELEMETRY.lock().expect("telemetry lock poisoned");
     let cap = if limit == 0 { MAX_LOG_ENTRIES } else { limit };
+    let lvl = level_filter
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("all"))
+        .map(str::to_ascii_lowercase);
+    let kw = keyword
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_lowercase);
     inner
         .logs
         .iter()
         .rev()
+        .filter(|entry| {
+            if let Some(l) = &lvl
+                && !entry.level.to_ascii_lowercase().contains(l)
+            {
+                return false;
+            }
+            if let Some(k) = &kw
+                && !entry.message.to_ascii_lowercase().contains(k)
+            {
+                return false;
+            }
+            true
+        })
         .take(cap)
         .cloned()
         .collect::<Vec<_>>()
@@ -164,9 +194,21 @@ pub fn clear_logs() {
 }
 
 pub fn sample_telemetry(connected: bool) -> TelemetrySnapshot {
+    let (tracked_up, tracked_down) = crate::connections::session_traffic_totals();
+    let tracked_active = crate::connections::active_connection_count();
     let mut inner = TELEMETRY.lock().expect("telemetry lock poisoned");
     let now = now_ms();
     if connected {
+        if tracked_up > inner.upload_bytes {
+            inner.upload_bytes = tracked_up;
+        }
+        if tracked_down > inner.download_bytes {
+            inner.download_bytes = tracked_down;
+        }
+        inner.active_sessions = tracked_active.max(inner.active_sessions);
+        if tracked_active > 0 || inner.active_sessions > 0 {
+            inner.active_sessions = tracked_active;
+        }
         let elapsed_ms = now.saturating_sub(inner.last_sampled_ms);
         if elapsed_ms >= 500 {
             let up_delta = inner.upload_bytes.saturating_sub(inner.last_sampled_upload);
@@ -192,6 +234,7 @@ pub fn sample_telemetry(connected: bool) -> TelemetrySnapshot {
     } else {
         inner.upload_speed_bps = 0;
         inner.download_speed_bps = 0;
+        inner.active_sessions = 0;
     }
     let (intranet_ipv4, intranet_ipv6) = detect_intranet_ips();
     TelemetrySnapshot {

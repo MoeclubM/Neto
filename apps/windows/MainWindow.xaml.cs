@@ -17,6 +17,7 @@ public sealed partial class MainWindow : Window
     private readonly ConnectPageView _connectView;
     private readonly DashboardPageView _dashboardView;
     private readonly NodesPageView _nodesView;
+    private readonly ConnectionsPageView _connectionsView;
     private readonly ProfilesPageView _profilesView;
     private readonly SettingsPageView _settingsView;
     private readonly AppWindow _appWindow;
@@ -47,14 +48,22 @@ public sealed partial class MainWindow : Window
         _client = new NetoClient(dataDir, "Neto", "Aerion", DispatcherQueue);
 
         _connectView = new ConnectPageView(_client, () => SwitchTab("nodes"), () => SwitchTab("profiles"), RequestElevation);
-        _dashboardView = new DashboardPageView(_client, () => SwitchTab("nodes"), () => SwitchTab("profiles"), RequestElevation, detachHeaderActions: true);
+        _dashboardView = new DashboardPageView(
+            _client,
+            () => SwitchTab("nodes"),
+            () => SwitchTab("profiles"),
+            RequestElevation,
+            detachHeaderActions: true,
+            onOpenConnections: () => SwitchTab("connections"));
         _nodesView = new NodesPageView(_client);
+        _connectionsView = new ConnectionsPageView(_client, detachHeaderActions: true);
         _profilesView = new ProfilesPageView(_client, _hwnd);
         _settingsView = new SettingsPageView(_client, ApplyThemeMode, RequestElevation);
 
         ContentHost.Children.Add(_connectView.Root);
         ContentHost.Children.Add(_dashboardView.Root);
         ContentHost.Children.Add(_nodesView.Root);
+        ContentHost.Children.Add(_connectionsView.Root);
         ContentHost.Children.Add(_profilesView.Root);
         ContentHost.Children.Add(_settingsView.Root);
 
@@ -88,6 +97,7 @@ public sealed partial class MainWindow : Window
         {
             NetoWindowHelper.SetClipboardText(NetoWindowHelper.BuildTerminalProxyCommand(_client.Snapshot));
         });
+        _tray.CloseAllConnectionsRequested += () => DispatcherQueue.TryEnqueue(async () => await _client.CloseAllConnectionsAsync());
         _tray.RestartElevatedRequested += () => DispatcherQueue.TryEnqueue(RequestElevation);
         _tray.SessionEnding += () => NetoNativeBridge.Shutdown();
         _tray.ExitRequested += () => DispatcherQueue.TryEnqueue(ExitApplication);
@@ -141,6 +151,7 @@ public sealed partial class MainWindow : Window
         {
             "dashboard" => NavDashboardItem,
             "nodes" => NavNodesItem,
+            "connections" => NavConnectionsItem,
             "profiles" => NavProfilesItem,
             "settings" => NavSettingsItem,
             _ => NavConnectItem,
@@ -159,18 +170,29 @@ public sealed partial class MainWindow : Window
             {
                 "dashboard" => "主页",
                 "nodes" => "节点",
+                "connections" => "会话",
                 "profiles" => "订阅",
                 "settings" => "设置",
                 _ => "",
             };
-            PageHeaderActionHost.Content = tab == "dashboard" ? _dashboardView.HeaderActions : null;
+            PageHeaderActionHost.Content = tab switch
+            {
+                "dashboard" => _dashboardView.HeaderActions,
+                "connections" => _connectionsView.HeaderActions,
+                _ => null,
+            };
         }
 
         _connectView.Root.Visibility = tab == "connect" ? Visibility.Visible : Visibility.Collapsed;
         _dashboardView.Root.Visibility = tab == "dashboard" ? Visibility.Visible : Visibility.Collapsed;
         _nodesView.Root.Visibility = tab == "nodes" ? Visibility.Visible : Visibility.Collapsed;
+        _connectionsView.Root.Visibility = tab == "connections" ? Visibility.Visible : Visibility.Collapsed;
         _profilesView.Root.Visibility = tab == "profiles" ? Visibility.Visible : Visibility.Collapsed;
         _settingsView.Root.Visibility = tab == "settings" ? Visibility.Visible : Visibility.Collapsed;
+        if (tab == "connections")
+        {
+            _connectionsView.ApplySnapshot(_client.Snapshot);
+        }
     }
 
     private void ApplyAllViews(NetoSnapshot snap)
@@ -179,6 +201,7 @@ public sealed partial class MainWindow : Window
         _connectView.ApplySnapshot(snap, _client.LastActionError);
         _dashboardView.ApplySnapshot(snap);
         _nodesView.ApplySnapshot(snap);
+        _connectionsView.ApplySnapshot(snap);
         _profilesView.ApplySnapshot(snap, _client.Busy, _client.LastActionError);
         _settingsView.ApplySnapshot(snap);
 

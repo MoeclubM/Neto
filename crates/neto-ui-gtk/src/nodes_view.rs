@@ -123,11 +123,16 @@ impl NodesView {
 
         let filter = self.filter_text.borrow().clone();
         let sig = format!(
-            "{:?}:{}:{}:{}:{}",
+            "{:?}:{}:{}:{}:{}:{}",
             snap.node_sort_mode,
             snap.selected_node_index,
             filter,
             snap.nodes.len(),
+            snap.proxy_groups
+                .iter()
+                .map(|g| format!("{}:{}:{:?}:{:?}", g.name, g.group_type, g.selected, g.now))
+                .collect::<Vec<_>>()
+                .join(","),
             snap.nodes
                 .iter()
                 .map(|n| format!("{}:{:?}:{:?}", n.index, n.latency_ms, n.last_error.is_some()))
@@ -153,11 +158,77 @@ impl NodesView {
             return;
         }
 
+        let non_empty_groups: Vec<_> = snap
+            .proxy_groups
+            .iter()
+            .filter(|g| !g.proxies.is_empty())
+            .collect();
+        if !non_empty_groups.is_empty() {
+            let grp_section = adw::PreferencesGroup::builder().title("策略组").build();
+            for grp in non_empty_groups {
+                let gname = grp.name.clone();
+                let type_label = match grp.group_type.to_ascii_lowercase().as_str() {
+                    "url-test" => "自动测速",
+                    "fallback" => "故障转移",
+                    "load-balance" => "负载均衡",
+                    _ => "手动选择",
+                };
+                let active_target = grp
+                    .now
+                    .as_deref()
+                    .or(grp.selected.as_deref())
+                    .unwrap_or_else(|| grp.proxies[0].as_str());
+                if grp.group_type.eq_ignore_ascii_case("select") {
+                    let refs: Vec<&str> = grp.proxies.iter().map(String::as_str).collect();
+                    let sel_idx = grp
+                        .proxies
+                        .iter()
+                        .position(|p| p == active_target)
+                        .unwrap_or(0) as u32;
+                    let combo = adw::ComboRow::builder()
+                        .title(&format!("{} · {type_label}", grp.name))
+                        .model(&gtk::StringList::new(&refs))
+                        .selected(sel_idx)
+                        .build();
+                    let proxies_clone = grp.proxies.clone();
+                    let ctrl = self.controller.clone();
+                    let gname_c = gname.clone();
+                    combo.connect_selected_notify(move |c| {
+                        if let Some(target) = proxies_clone.get(c.selected() as usize) {
+                            let _ = ctrl.select_group_proxy(&gname_c, target);
+                        }
+                    });
+                    grp_section.add(&combo);
+                } else {
+                    let row = adw::ActionRow::builder()
+                        .title(&format!("{} · {type_label}", grp.name))
+                        .subtitle(&format!("当前命中：{active_target}"))
+                        .build();
+                    let tbtn = gtk::Button::from_icon_name("view-refresh-symbolic");
+                    tbtn.add_css_class("flat");
+                    tbtn.set_valign(gtk::Align::Center);
+                    let ctrl = self.controller.clone();
+                    let rt = self.rt.clone();
+                    tbtn.connect_clicked(move |_| {
+                        let ctrl = ctrl.clone();
+                        let gname = gname.clone();
+                        rt.spawn(async move {
+                            let _ = ctrl.test_group_nodes(&gname).await;
+                        });
+                    });
+                    row.add_suffix(&tbtn);
+                    grp_section.add(&row);
+                }
+            }
+            self.list_box.append(&grp_section);
+        }
+
         let group = adw::PreferencesGroup::new();
         for node in &snap.nodes {
             if !filter.is_empty()
                 && !node.name.to_lowercase().contains(&filter)
                 && !node.protocol_label.to_lowercase().contains(&filter)
+                && !node.tags.iter().any(|t| t.to_lowercase().contains(&filter))
             {
                 continue;
             }

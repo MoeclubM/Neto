@@ -23,7 +23,6 @@ public sealed class ConnectPageView
     private readonly TextBlock _endpointLabel;
     private readonly Button _connectButton;
     private readonly Button _probeButton;
-    private readonly Button _copyProxyButton;
     private readonly TextBlock _nodeNameLabel;
     private readonly TextBlock _nodeMetaLabel;
     private readonly TextBlock _profileNameLabel;
@@ -114,37 +113,29 @@ public sealed class ConnectPageView
 
         _connectButton = new Button
         {
-            Content = "立即连接",
+            Content = "连接",
             MinWidth = 132,
             Height = 38,
             HorizontalAlignment = HorizontalAlignment.Stretch,
         };
         _connectButton.Click += async (_, _) => await _client.ToggleConnectAsync();
 
-        var subActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, HorizontalAlignment = HorizontalAlignment.Right };
-        _probeButton = new Button { Content = "测速", Visibility = Visibility.Collapsed };
+        _probeButton = new Button
+        {
+            Content = "测速",
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Visibility = Visibility.Collapsed,
+        };
         _probeButton.Click += async (_, _) =>
         {
             _probeButton.IsEnabled = false;
             try { await _client.ProbeTunnelAsync(); }
             finally { _probeButton.IsEnabled = true; }
         };
-        _copyProxyButton = new Button { Content = "复制终端代理" };
-        _copyProxyButton.Click += async (_, _) =>
-        {
-            if (NetoWindowHelper.SetClipboardText(NetoWindowHelper.BuildTerminalProxyCommand(_client.Snapshot)))
-            {
-                _copyProxyButton.Content = "已复制";
-                await Task.Delay(1200);
-                _copyProxyButton.Content = "复制终端代理";
-            }
-        };
-        subActions.Children.Add(_probeButton);
-        subActions.Children.Add(_copyProxyButton);
 
-        var heroRight = new StackPanel { Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        var heroRight = new StackPanel { Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
         heroRight.Children.Add(_connectButton);
-        heroRight.Children.Add(subActions);
+        heroRight.Children.Add(_probeButton);
         Grid.SetColumn(heroRight, 1);
         heroGrid.Children.Add(heroLeft);
         heroGrid.Children.Add(heroRight);
@@ -362,7 +353,7 @@ public sealed class ConnectPageView
         _durationLabel.Text = conn.Connected && conn.ConnectedAtMs > 0
             ? NetoFormat.FormatDurationMs(Math.Max(0UL, NetoFormat.NowUnixMs() - conn.ConnectedAtMs))
             : "00:00:00";
-        _connectButton.Content = conn.Connecting ? "连接中..." : conn.Connected ? "断开连接" : "立即连接";
+        _connectButton.Content = conn.Connecting ? "连接中..." : conn.Connected ? "断开" : "连接";
         _connectButton.IsEnabled = !conn.Connecting;
         NetoUiFactory.ApplyPrimaryButton(_connectButton, !conn.Connected);
         _probeButton.Visibility = conn.Connected ? Visibility.Visible : Visibility.Collapsed;
@@ -401,7 +392,7 @@ public sealed class ConnectPageView
         else
         {
             _nodeNameLabel.Text = "暂无可用节点";
-            _nodeMetaLabel.Text = "前往节点页选择";
+            _nodeMetaLabel.Text = "未选择";
         }
 
         var prof = snap.ActiveProfile;
@@ -416,7 +407,7 @@ public sealed class ConnectPageView
         else
         {
             _profileNameLabel.Text = "未配置订阅";
-            _profileMetaLabel.Text = "尚未载入订阅";
+            _profileMetaLabel.Text = "暂无订阅";
             _refreshProfileBtn.Visibility = Visibility.Collapsed;
         }
 

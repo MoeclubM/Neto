@@ -35,7 +35,6 @@ impl ConnectView {
     ) -> Rc<Self> {
         let updating = Rc::new(std::cell::Cell::new(false));
 
-        // Dedicated titleless Connect UI: clean centered vertical stack, compact enterprise spacing
         let root = gtk::Box::new(gtk::Orientation::Vertical, 14);
         root.set_valign(gtk::Align::Center);
         root.set_halign(gtk::Align::Center);

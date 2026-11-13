@@ -1,6 +1,8 @@
 pub mod format;
 
 #[cfg(target_os = "linux")]
+pub mod connections_view;
+#[cfg(target_os = "linux")]
 pub mod connect_view;
 #[cfg(target_os = "linux")]
 pub mod dashboard_view;

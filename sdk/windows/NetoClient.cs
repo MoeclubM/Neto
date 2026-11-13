@@ -137,6 +137,8 @@ public sealed class NetoClient : IDisposable
     }
 
     public Task TestAllNodesAsync() => InvokeSnapshotCallAsync("test_all_nodes", null);
+    public Task TestGroupNodesAsync(string groupName) =>
+        InvokeSnapshotCallAsync("test_group_nodes", new { group_name = groupName });
 
     public async Task ProbeTunnelAsync()
     {
@@ -150,7 +152,118 @@ public sealed class NetoClient : IDisposable
         await RefreshSnapshotAsync();
     }
 
-    public async Task AddRemoteProfileAsync(string name, string url, int autoUpdateMins = 60)
+    public async Task<NetoNetworkCheckResult?> CheckConnectivityAsync()
+    {
+        EnqueueUi(() => { LastActionError = null; });
+        try
+        {
+            var res = await NetoNativeBridge.CallAsync("check_connectivity");
+            var parsed = res.Deserialize<NetoNetworkCheckResult>();
+            await RefreshSnapshotAsync();
+            return parsed;
+        }
+        catch (Exception ex)
+        {
+            EnqueueUi(() => { LastActionError = ex.Message; SnapshotChanged?.Invoke(Snapshot); });
+            return null;
+        }
+    }
+
+    public async Task<NetoConnectionsSnapshot> GetConnectionsAsync()
+    {
+        try
+        {
+            var res = await NetoNativeBridge.CallAsync("list_connections");
+            return res.Deserialize<NetoConnectionsSnapshot>() ?? new NetoConnectionsSnapshot();
+        }
+        catch
+        {
+            return new NetoConnectionsSnapshot();
+        }
+    }
+
+    public async Task CloseConnectionAsync(ulong id)
+    {
+        try
+        {
+            await NetoNativeBridge.CallAsync("close_connection", new { id });
+        }
+        catch
+        {
+        }
+    }
+
+    public async Task CloseAllConnectionsAsync()
+    {
+        try
+        {
+            await NetoNativeBridge.CallAsync("close_all_connections");
+        }
+        catch
+        {
+        }
+        await RefreshSnapshotAsync();
+    }
+
+    public async Task<NetoRulesListResult> GetRulesAsync(string filter = "", int limit = 500)
+    {
+        try
+        {
+            var res = await NetoNativeBridge.CallAsync("list_rules", new { filter, limit });
+            return res.Deserialize<NetoRulesListResult>() ?? new NetoRulesListResult();
+        }
+        catch
+        {
+            return new NetoRulesListResult();
+        }
+    }
+
+    public async Task RefreshAllProfilesAsync()
+    {
+        EnqueueUi(() => { Busy = true; LastActionError = null; SnapshotChanged?.Invoke(Snapshot); });
+        try
+        {
+            var res = await NetoNativeBridge.CallAsync("refresh_all_profiles");
+            var snap = res["snapshot"].Deserialize<NetoSnapshot>();
+            if (snap != null)
+            {
+                EnqueueUi(() => { Snapshot = snap; });
+            }
+        }
+        catch (Exception ex)
+        {
+            EnqueueUi(() => { LastActionError = ex.Message; });
+        }
+        finally
+        {
+            EnqueueUi(() => { Busy = false; SnapshotChanged?.Invoke(Snapshot); });
+        }
+    }
+
+    public Task UpdateProfileAsync(
+        string id,
+        string? name = null,
+        string? url = null,
+        string? flag = null,
+        int? autoUpdateMins = null,
+        string? yaml = null)
+    {
+        var obj = new JsonObject { ["id"] = id };
+        if (name != null) obj["name"] = name;
+        if (url != null) obj["url"] = url;
+        if (flag != null) obj["flag"] = flag;
+        if (autoUpdateMins.HasValue) obj["auto_update_mins"] = autoUpdateMins.Value;
+        if (yaml != null) obj["yaml"] = yaml;
+        return InvokeSnapshotCallAsync("update_profile", obj);
+    }
+
+    public async Task<string> GetProfileYamlAsync(string? id = null)
+    {
+        var res = await NetoNativeBridge.CallAsync("get_profile_yaml", id is null ? new { } : new { id });
+        return res["yaml"]?.GetValue<string>() ?? "";
+    }
+
+    public async Task AddRemoteProfileAsync(string name, string url, int autoUpdateMins = 60, string flag = "aerion")
     {
         EnqueueUi(() => { Busy = true; LastActionError = null; SnapshotChanged?.Invoke(Snapshot); });
         try
@@ -159,7 +272,7 @@ public sealed class NetoClient : IDisposable
             {
                 name,
                 url,
-                flag = "aerion",
+                flag = string.IsNullOrWhiteSpace(flag) ? "aerion" : flag,
                 auto_update_mins = autoUpdateMins,
             });
             var snap = res["snapshot"].Deserialize<NetoSnapshot>() ?? new NetoSnapshot();
@@ -225,9 +338,18 @@ public sealed class NetoClient : IDisposable
         return res["user_info"];
     }
 
-    public async Task<List<NetoLogEntry>> GetLogsAsync(int limit = 150)
+    public async Task<List<NetoLogEntry>> GetLogsAsync(int limit = 200, string? level = null, string? filter = null)
     {
-        var res = await NetoNativeBridge.CallAsync("logs", new { limit });
+        var obj = new JsonObject { ["limit"] = limit };
+        if (!string.IsNullOrWhiteSpace(level) && !string.Equals(level, "all", StringComparison.OrdinalIgnoreCase))
+        {
+            obj["level"] = level;
+        }
+        if (!string.IsNullOrWhiteSpace(filter))
+        {
+            obj["filter"] = filter;
+        }
+        var res = await NetoNativeBridge.CallAsync("logs", obj);
         return res.Deserialize<List<NetoLogEntry>>() ?? [];
     }
 

@@ -12,14 +12,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.json.JSONArray
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Button
@@ -48,7 +47,10 @@ fun NetoSettingsPane(
 ) {
     val settings = snapshot.settings
     var showAppRules by rememberSaveable { mutableStateOf(false) }
+    var showConnections by rememberSaveable { mutableStateOf(false) }
+    var showRulesDialog by rememberSaveable { mutableStateOf(false) }
     var showLogs by rememberSaveable { mutableStateOf(false) }
+    val checkingConnectivity by client.checkingConnectivity.collectAsStateWithLifecycle()
     var customRouteDraft by rememberSaveable(settings.customRouteYaml) { mutableStateOf(settings.customRouteYaml) }
 
     val themeModes = listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色")
@@ -198,10 +200,35 @@ fun NetoSettingsPane(
 
         item(key = "logs") {
             SmallTitle("诊断")
+            val checkRes = snapshot.lastNetworkCheck
+            val checkSummary = when {
+                checkingConnectivity -> "检测中..."
+                checkRes == null -> "未检测"
+                else -> {
+                    val ip = listOfNotNull(checkRes.exitIp, checkRes.exitCountry, checkRes.exitIsp).joinToString(" · ")
+                    val delays = checkRes.targets.joinToString(" · ") { t -> t.latencyMs?.let { "${t.name} ${it}ms" } ?: "${t.name} 超时" }
+                    listOf(ip, delays).filter { it.isNotBlank() }.joinToString(" | ")
+                }
+            }
             NetoPreferenceCard {
                 ArrowPreference(
+                    title = "活跃会话",
+                    summary = "并发 ${snapshot.telemetry.activeSessions} · ↑ ${formatNetoBytes(snapshot.telemetry.uploadBytes)} ↓ ${formatNetoBytes(snapshot.telemetry.downloadBytes)}",
+                    onClick = { showConnections = true },
+                )
+                ArrowPreference(
+                    title = "分流规则与匹配",
+                    summary = "共 ${snapshot.ruleCount} 条规则",
+                    onClick = { showRulesDialog = true },
+                )
+                ArrowPreference(
+                    title = "出口检测",
+                    summary = checkSummary,
+                    onClick = client::checkConnectivity,
+                )
+                ArrowPreference(
                     title = "运行日志",
-                    summary = "查看核心连接与分流日志",
+                    summary = if (logs.isEmpty()) "无记录" else "${logs.size} 条记录",
                     onClick = {
                         client.refreshLogs()
                         showLogs = true
@@ -226,39 +253,26 @@ fun NetoSettingsPane(
         )
     }
 
-    OverlayDialog(
-        show = showLogs,
-        title = "运行日志",
-        onDismissRequest = { showLogs = false },
-    ) {
-        LaunchedEffect(showLogs) {
-            if (showLogs) client.refreshLogs()
-        }
-        Column(modifier = Modifier.fillMaxWidth()) {
-            if (logs.isEmpty()) {
-                Text("暂无日志", color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-            } else {
-                LazyColumn(modifier = Modifier.fillMaxWidth().height(280.dp)) {
-                    items(logs.takeLast(80)) { entry ->
-                        Text(
-                            "[${entry.level}] ${entry.message}",
-                            style = MiuixTheme.textStyles.body2,
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier.padding(vertical = 2.dp),
-                        )
-                    }
-                }
-            }
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                TextButton(text = "清空", onClick = client::clearLogs)
-                TextButton(
-                    text = "关闭",
-                    onClick = { showLogs = false },
-                    colors = ButtonDefaults.textButtonColorsPrimary(),
-                )
-            }
-        }
+    if (showConnections) {
+        NetoActiveConnectionsDialog(
+            client = client,
+            onDismiss = { showConnections = false },
+        )
+    }
+
+    if (showRulesDialog) {
+        NetoRulesAndRouteTestDialog(
+            client = client,
+            onDismiss = { showRulesDialog = false },
+        )
+    }
+
+    if (showLogs) {
+        NetoLogsDialog(
+            logs = logs,
+            client = client,
+            onDismiss = { showLogs = false },
+        )
     }
 }
 

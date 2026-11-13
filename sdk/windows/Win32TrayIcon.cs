@@ -52,6 +52,7 @@ public sealed class Win32TrayIcon : IDisposable
     public bool CanUseTun { get; set; } = true;
     public string RoutingMode { get; set; } = "rule";
     public string StatusSummary { get; set; } = "";
+    public int ActiveSessions { get; set; }
 
     public event Action? ShowRequested;
     public event Action? PrimaryClickRequested;
@@ -61,6 +62,7 @@ public sealed class Win32TrayIcon : IDisposable
     public event Action? ToggleSystemProxyRequested;
     public event Action? ToggleTunRequested;
     public event Action? CopyProxyCommandRequested;
+    public event Action? CloseAllConnectionsRequested;
     public event Action? RestartElevatedRequested;
     public event Action? SessionEnding;
     public event Action? ExitRequested;
@@ -95,6 +97,7 @@ public sealed class Win32TrayIcon : IDisposable
         TunEnabled = snap.Settings.TunEnabled;
         CanUseTun = snap.Connection.CanUseTun;
         RoutingMode = snap.Settings.RoutingMode;
+        ActiveSessions = snap.Telemetry.ActiveSessions;
         _selectedNodeIndex = snap.SelectedNodeIndex;
         _nodes = snap.Nodes.Where(n => n.Supported).Take(30).ToList();
 
@@ -187,8 +190,12 @@ public sealed class Win32TrayIcon : IDisposable
             }
 
             var connectFlags = MF_STRING | ((!AllowConnect || Connecting) ? (MF_GRAYED | MF_DISABLED) : 0);
-            var connectLabel = Connecting ? "连接中..." : (Connected ? "断开连接" : "立即连接");
+            var connectLabel = Connecting ? "连接中..." : (Connected ? "断开连接" : "连接");
             AppendMenuW(hMenu, connectFlags, 2, connectLabel);
+            if (Connected && ActiveSessions > 0)
+            {
+                AppendMenuW(hMenu, MF_STRING, 24, $"断开活跃会话 ({ActiveSessions})");
+            }
             AppendMenuW(hMenu, MF_SEPARATOR, 0, null);
 
             var hModeMenu = CreatePopupMenu();
@@ -261,6 +268,7 @@ public sealed class Win32TrayIcon : IDisposable
                 case 20: ToggleSystemProxyRequested?.Invoke(); break;
                 case 21: ToggleTunRequested?.Invoke(); break;
                 case 22: CopyProxyCommandRequested?.Invoke(); break;
+                case 24: CloseAllConnectionsRequested?.Invoke(); break;
                 case 23: RestartElevatedRequested?.Invoke(); break;
                 case 30: ExitRequested?.Invoke(); break;
             }

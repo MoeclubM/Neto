@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "moe.telecom.neto"
-version = "0.0.2"
+version = "0.0.3"
 
 val minNdkApi = 26
 val appMinApi = 33

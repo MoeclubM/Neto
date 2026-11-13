@@ -159,7 +159,7 @@ fun NetoConnectPane(
                 selected.protocolLabel.takeIf { it.isNotBlank() },
                 selected.latencyMs?.let { "$it ms" },
             ).joinToString(" · ")
-            else -> "前往节点或订阅页选择"
+            else -> "未选择"
         }
         Card(modifier = Modifier.fillMaxWidth()) {
             ArrowPreference(

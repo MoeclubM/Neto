@@ -31,14 +31,29 @@ public sealed class SettingsPageView
     private readonly TextBox _testUrlBox;
     private readonly TextBox _customRouteBox;
     private readonly TextBlock _saveFeedbackText;
-    private readonly TextBox _routeTestTargetBox;
-    private readonly ComboBox _routeTestNetCombo;
-    private readonly TextBlock _routeTestResultText;
+    private readonly ComboBox _shellFormatCombo;
+    private readonly ComboBox _logLevelCombo;
+    private readonly TextBox _logSearchBox;
     private readonly TextBox _logsBox;
     private readonly StackPanel _extraFooterHost;
     private bool _updating;
     private bool _inputsInitialized;
     private bool _inputsDirty;
+
+    private static readonly (string Key, string Label)[] ShellFormats =
+    [
+        ("powershell", "PowerShell"),
+        ("cmd", "CMD"),
+        ("bash", "Bash"),
+    ];
+
+    private static readonly (string Key, string Label)[] LogLevels =
+    [
+        ("all", "全部级别"),
+        ("info", "INFO"),
+        ("warn", "WARN"),
+        ("error", "ERROR"),
+    ];
 
     private static readonly (string Key, string Label)[] ThemeModes =
     [
@@ -110,17 +125,22 @@ public sealed class SettingsPageView
         var utilRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var openDataBtn = new Button { Content = "打开数据目录" };
         openDataBtn.Click += (_, _) => NetoWindowHelper.OpenFolder(_client.DataDir);
-        var copyCmdBtn = new Button { Content = "复制终端代理命令" };
+        _shellFormatCombo = new ComboBox { Width = 132 };
+        foreach (var (_, label) in ShellFormats) _shellFormatCombo.Items.Add(label);
+        _shellFormatCombo.SelectedIndex = 0;
+        var copyCmdBtn = new Button { Content = "复制终端环境变量" };
         copyCmdBtn.Click += async (_, _) =>
         {
-            if (NetoWindowHelper.SetClipboardText(NetoWindowHelper.BuildTerminalProxyCommand(_client.Snapshot)))
+            var fmt = ShellFormats[Math.Clamp(_shellFormatCombo.SelectedIndex, 0, ShellFormats.Length - 1)].Key;
+            if (NetoWindowHelper.SetClipboardText(NetoWindowHelper.BuildTerminalProxyCommand(_client.Snapshot, fmt)))
             {
                 copyCmdBtn.Content = "已复制";
                 await Task.Delay(1200);
-                copyCmdBtn.Content = "复制终端代理命令";
+                copyCmdBtn.Content = "复制终端环境变量";
             }
         };
         utilRow.Children.Add(openDataBtn);
+        utilRow.Children.Add(_shellFormatCombo);
         utilRow.Children.Add(copyCmdBtn);
         generalStack.Children.Add(generalGrid);
         generalStack.Children.Add(utilRow);
@@ -206,35 +226,6 @@ public sealed class SettingsPageView
         netStack.Children.Add(_customRouteBox);
         outer.Children.Add(NetoUiFactory.CreateCard(netStack));
 
-        var routeTestStack = new StackPanel { Spacing = 8 };
-        routeTestStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("分流规则测试"));
-        var routeTestRow = new Grid { ColumnSpacing = 8 };
-        routeTestRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        routeTestRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(100) });
-        routeTestRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        _routeTestTargetBox = new TextBox { PlaceholderText = "输入域名或 IP（如 www.google.com 或 223.5.5.5:53）" };
-        _routeTestNetCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
-        _routeTestNetCombo.Items.Add("TCP");
-        _routeTestNetCombo.Items.Add("UDP");
-        _routeTestNetCombo.SelectedIndex = 0;
-        var runRouteTestBtn = new Button { Content = "测试匹配" };
-        runRouteTestBtn.Click += async (_, _) => await RunRouteTestAsync(runRouteTestBtn);
-        Grid.SetColumn(_routeTestNetCombo, 1);
-        Grid.SetColumn(runRouteTestBtn, 2);
-        routeTestRow.Children.Add(_routeTestTargetBox);
-        routeTestRow.Children.Add(_routeTestNetCombo);
-        routeTestRow.Children.Add(runRouteTestBtn);
-        _routeTestResultText = new TextBlock
-        {
-            FontSize = 12,
-            FontFamily = new FontFamily("Consolas"),
-            Visibility = Visibility.Collapsed,
-            TextWrapping = TextWrapping.Wrap,
-        };
-        routeTestStack.Children.Add(routeTestRow);
-        routeTestStack.Children.Add(_routeTestResultText);
-        outer.Children.Add(NetoUiFactory.CreateCard(routeTestStack));
-
         var logActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         var refreshLogBtn = new Button { Content = "刷新" };
         var copyLogBtn = new Button { Content = "复制" };
@@ -244,6 +235,19 @@ public sealed class SettingsPageView
         logActions.Children.Add(clearLogBtn);
         var logStack = new StackPanel { Spacing = 8 };
         logStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("运行日志", logActions));
+        var logFilterRow = new Grid { ColumnSpacing = 8 };
+        logFilterRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(128) });
+        logFilterRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        _logLevelCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
+        foreach (var (_, label) in LogLevels) _logLevelCombo.Items.Add(label);
+        _logLevelCombo.SelectedIndex = 0;
+        _logLevelCombo.SelectionChanged += async (_, _) => { if (_inputsInitialized) await RefreshLogsAsync(); };
+        _logSearchBox = new TextBox { PlaceholderText = "筛选日志内容" };
+        _logSearchBox.TextChanged += async (_, _) => { if (_inputsInitialized) await RefreshLogsAsync(); };
+        Grid.SetColumn(_logSearchBox, 1);
+        logFilterRow.Children.Add(_logLevelCombo);
+        logFilterRow.Children.Add(_logSearchBox);
+        logStack.Children.Add(logFilterRow);
         _logsBox = new TextBox
         {
             IsReadOnly = true,
@@ -351,35 +355,11 @@ public sealed class SettingsPageView
         if (_saveFeedbackText.Text == "已保存") _saveFeedbackText.Text = "";
     }
 
-    private async Task RunRouteTestAsync(Button triggerBtn)
-    {
-        var target = _routeTestTargetBox.Text.Trim();
-        if (string.IsNullOrEmpty(target)) return;
-        var net = _routeTestNetCombo.SelectedIndex == 1 ? "udp" : "tcp";
-        triggerBtn.IsEnabled = false;
-        try
-        {
-            var res = await _client.TestRouteAsync(target, net);
-            var outbound = string.IsNullOrEmpty(res.Outbound) ? res.Decision : $"{res.Decision} ({res.Outbound})";
-            _routeTestResultText.Text = $"{res.Target} [{res.Network.ToUpperInvariant()}] -> {outbound}  |  匹配规则: {res.MatchedRule}";
-            _routeTestResultText.Foreground = NetoUiFactory.BrushResource("TextFillColorPrimaryBrush", Colors.White);
-            _routeTestResultText.Visibility = Visibility.Visible;
-        }
-        catch (Exception ex)
-        {
-            _routeTestResultText.Text = ex.Message;
-            _routeTestResultText.Foreground = new SolidColorBrush(Color.FromArgb(255, 216, 82, 76));
-            _routeTestResultText.Visibility = Visibility.Visible;
-        }
-        finally
-        {
-            triggerBtn.IsEnabled = true;
-        }
-    }
-
     public async Task RefreshLogsAsync()
     {
-        var entries = await _client.GetLogsAsync(100);
+        var level = LogLevels[Math.Clamp(_logLevelCombo.SelectedIndex, 0, LogLevels.Length - 1)].Key;
+        var filter = _logSearchBox.Text.Trim();
+        var entries = await _client.GetLogsAsync(200, level, filter);
         _logsBox.Text = string.Join(Environment.NewLine, entries.Select(e => $"{NetoFormat.FormatLogTimestamp(e.TimestampMs)} [{e.Level.ToUpperInvariant()}] {e.Message}"));
     }
 }
