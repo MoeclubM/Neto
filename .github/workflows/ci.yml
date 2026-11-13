@@ -85,11 +85,12 @@ jobs:
           dotnet publish apps/windows/Neto.Windows.csproj \
             -c Release \
             -r win-x64 \
-            -o dist/Neto-win-x64
-          test -f dist/Neto-win-x64/Neto.exe
-          test -f dist/Neto-win-x64/neto_ffi.dll
-          test -f dist/Neto-win-x64/wintun.dll
-          powershell -NoProfile -Command "Compress-Archive -Path 'dist/Neto-win-x64/*' -DestinationPath 'dist/Neto-windows-x64.zip' -Force"
+            -o dist/Neto
+          test -f dist/Neto/Neto.exe
+          test -f dist/Neto/Neto.pri
+          test -f dist/Neto/neto_ffi.dll
+          test -f dist/Neto/wintun.dll
+          powershell -NoProfile -Command "Compress-Archive -Path 'dist/Neto' -DestinationPath 'dist/Neto-windows-x64.zip' -Force"
       - name: Upload Windows zip
         uses: actions/upload-artifact@v7
         with:

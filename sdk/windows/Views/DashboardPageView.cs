@@ -44,6 +44,8 @@ public sealed class DashboardPageView
         };
 
         _extraHeaderHost = new StackPanel { Spacing = 8 };
+        _customizePanel = new StackPanel { Spacing = 6, Visibility = Visibility.Collapsed };
+        _cardsPanel = new StackPanel { Spacing = 10 };
 
         var toolbar = new StackPanel
         {
@@ -70,9 +72,6 @@ public sealed class DashboardPageView
         };
         toolbar.Children.Add(_resetBtn);
         toolbar.Children.Add(_customizeBtn);
-
-        _customizePanel = new StackPanel { Spacing = 6, Visibility = Visibility.Collapsed };
-        _cardsPanel = new StackPanel { Spacing = 10 };
 
         outer.Children.Add(_extraHeaderHost);
         outer.Children.Add(toolbar);

@@ -53,8 +53,12 @@ jobs:
           mkdir -p apps/windows/native dist
           cp target/release/neto_ffi.dll apps/windows/native/
           cp target/release/wintun.dll apps/windows/native/
-          dotnet publish apps/windows/Neto.Windows.csproj -c Release -r win-x64 -o dist/Neto-win-x64
-          powershell -NoProfile -Command "Compress-Archive -Path 'dist/Neto-win-x64/*' -DestinationPath 'dist/Neto-${GITHUB_REF_NAME}-windows-x64.zip' -Force"
+          dotnet publish apps/windows/Neto.Windows.csproj -c Release -r win-x64 -o dist/Neto
+          test -f dist/Neto/Neto.exe
+          test -f dist/Neto/Neto.pri
+          test -f dist/Neto/neto_ffi.dll
+          test -f dist/Neto/wintun.dll
+          powershell -NoProfile -Command "Compress-Archive -Path 'dist/Neto' -DestinationPath 'dist/Neto-${GITHUB_REF_NAME}-windows-x64.zip' -Force"
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/Neto-${{ github.ref_name }}-windows-x64.zip

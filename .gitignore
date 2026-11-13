@@ -1,9 +1,11 @@
 /target/
+/dist/
 /.gradle/
 /build/
 **/build/
 **/bin/
 **/obj/
+apps/windows/native/
 *.apk
 *.aab
 *.deb

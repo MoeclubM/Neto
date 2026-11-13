@@ -19,6 +19,7 @@ public sealed class SettingsPageView
     private readonly TextBox _testUrlBox;
     private readonly TextBox _customRouteBox;
     private readonly TextBox _logsBox;
+    private readonly StackPanel _extraFooterHost;
     private bool _loaded;
 
     private static readonly (string Key, string Label)[] DnsModes =
@@ -101,7 +102,16 @@ public sealed class SettingsPageView
         logStack.Children.Add(_logsBox);
         outer.Children.Add(NetoUiFactory.CreateCard(logStack));
 
+        _extraFooterHost = new StackPanel { Spacing = 12 };
+        outer.Children.Add(_extraFooterHost);
+
         Root = new ScrollViewer { Content = outer };
+    }
+
+    public void SetExtraFooter(UIElement? element)
+    {
+        _extraFooterHost.Children.Clear();
+        if (element != null) _extraFooterHost.Children.Add(element);
     }
 
     public void ApplySnapshot(NetoSnapshot snap)

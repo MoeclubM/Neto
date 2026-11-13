@@ -77,6 +77,11 @@ class NetoControllerClient(
     fun prepareVpnPermission(): Intent? = VpnService.prepare(appContext)
 
     fun startVpn() {
+        val settings = _snapshot.value.settings
+        if (settings.appRuleMode == "allow" && settings.allowedApps.isEmpty()) {
+            _actionError.value = "白名单模式尚未选择应用"
+            return
+        }
         _actionError.value = null
         NetoVpnService.start(appContext, appTitle)
     }
@@ -237,9 +242,10 @@ class NetoControllerClient(
         name: String,
         url: String,
         nodes: JSONArray,
-        routeConfigYaml: String?,
-        rulesPreview: List<String>,
-        ruleCount: Int,
+        routeConfigYaml: String? = null,
+        rulesPreview: List<String> = emptyList(),
+        ruleCount: Int = 0,
+        preserveRoutes: Boolean = false,
         usedUploadBytes: Long = 0L,
         usedDownloadBytes: Long = 0L,
         totalBytes: Long = 0L,
@@ -252,6 +258,7 @@ class NetoControllerClient(
             .put("nodes", nodes)
             .put("rules_preview", JSONArray(rulesPreview))
             .put("rule_count", ruleCount)
+            .put("preserve_routes", preserveRoutes)
         if (!routeConfigYaml.isNullOrBlank()) {
             params.put("route_config_yaml", routeConfigYaml)
         }
@@ -269,6 +276,23 @@ class NetoControllerClient(
         val snap = NetoSnapshot.fromJson(env.getJSONObject("result"))
         _snapshot.value = snap
         snap
+    }
+
+    suspend fun clearManagedProfile(
+        id: String = "managed-default",
+        name: String = appTitle,
+        url: String = "",
+    ): NetoSnapshot {
+        val snap = upsertManagedProfile(
+            id = id,
+            name = name,
+            url = url,
+            nodes = JSONArray(),
+        )
+        if (snap.connection.connected) {
+            stopVpn()
+        }
+        return snap
     }
 
     suspend fun syncManagedSubscription(

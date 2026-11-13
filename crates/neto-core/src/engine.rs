@@ -355,7 +355,18 @@ impl NetoController {
         id: &str,
         name: &str,
         url: &str,
+        payload: ParsedProfilePayload,
+    ) -> Result<()> {
+        self.upsert_managed_profile_with_options(id, name, url, payload, false)
+    }
+
+    pub fn upsert_managed_profile_with_options(
+        &self,
+        id: &str,
+        name: &str,
+        url: &str,
         mut payload: ParsedProfilePayload,
+        preserve_routes: bool,
     ) -> Result<()> {
         {
             let mut guard = self.state.lock().expect("controller state lock poisoned");
@@ -372,9 +383,11 @@ impl NetoController {
                     existing.user_info = payload.user_info.clone();
                     existing.nodes = payload.nodes.clone();
                     existing.proxy_groups = payload.proxy_groups.clone();
-                    existing.route_config_yaml = payload.route_config_yaml.clone();
-                    existing.rule_count = payload.rule_count;
-                    existing.rules_preview = payload.rules_preview.clone();
+                    if !preserve_routes || payload.route_config_yaml.is_some() {
+                        existing.route_config_yaml = payload.route_config_yaml.clone();
+                        existing.rule_count = payload.rule_count;
+                        existing.rules_preview = payload.rules_preview.clone();
+                    }
                     existing.nodes.len()
                 });
             if let Some(nodes_len) = existing_nodes_len {
@@ -1391,6 +1404,8 @@ impl NetoController {
                     #[serde(default)]
                     rule_count: usize,
                     #[serde(default)]
+                    preserve_routes: bool,
+                    #[serde(default)]
                     user_info: Option<SubscriptionUserInfo>,
                 }
                 let req: UpsertReq = serde_json::from_value(params)?;
@@ -1401,7 +1416,13 @@ impl NetoController {
                     req.rule_count,
                     req.user_info,
                 );
-                self.upsert_managed_profile(&req.id, &req.name, &req.url, payload)?;
+                self.upsert_managed_profile_with_options(
+                    &req.id,
+                    &req.name,
+                    &req.url,
+                    payload,
+                    req.preserve_routes,
+                )?;
                 Ok(serde_json::to_value(self.snapshot())?)
             }
             "sync_managed_subscription" => {

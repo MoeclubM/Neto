@@ -43,6 +43,8 @@ fun NetoSettingsPane(
     installedApps: List<InstalledAppEntry>,
     client: NetoControllerClient,
     modifier: Modifier = Modifier,
+    extraHeaderSlot: (@Composable () -> Unit)? = null,
+    extraFooterSlot: (@Composable () -> Unit)? = null,
 ) {
     val settings = snapshot.settings
     var showAppRules by rememberSaveable { mutableStateOf(false) }
@@ -57,6 +59,12 @@ fun NetoSettingsPane(
         contentPadding = PaddingValues(top = 8.dp, bottom = 28.dp),
         overscrollEffect = null,
     ) {
+        if (extraHeaderSlot != null) {
+            item(key = "extra-header") {
+                extraHeaderSlot()
+            }
+        }
+
         item(key = "general") {
             SmallTitle("界面与分流")
             NetoPreferenceCard {
@@ -112,6 +120,15 @@ fun NetoSettingsPane(
                     selectedIndex = dnsIdx,
                     onSelectedIndexChange = { idx ->
                         client.updateSettings(JSONObject().put("vpn_dns_mode", dnsModes[idx].first), restartIfConnected = true)
+                    },
+                )
+                NetoEditPreference(
+                    title = "虚拟 DNS 地址池",
+                    value = settings.virtualDnsPool,
+                    onConfirm = { v ->
+                        if (v.isNotBlank()) {
+                            client.updateSettings(JSONObject().put("virtual_dns_pool", v), restartIfConnected = true)
+                        }
                     },
                 )
                 NetoEditPreference(
@@ -190,6 +207,12 @@ fun NetoSettingsPane(
                         showLogs = true
                     },
                 )
+            }
+        }
+
+        if (extraFooterSlot != null) {
+            item(key = "extra-footer") {
+                extraFooterSlot()
             }
         }
     }

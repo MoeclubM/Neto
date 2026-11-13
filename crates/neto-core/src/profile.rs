@@ -153,25 +153,78 @@ pub fn protocol_display_label(proto: &str) -> String {
     }
 }
 
+fn strip_ipv6_brackets(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.len() > 2 && trimmed.starts_with('[') && trimmed.ends_with(']') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        if inner.contains(':') {
+            return inner.to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn is_ip_literal(raw: &str) -> bool {
+    strip_ipv6_brackets(raw).parse::<std::net::IpAddr>().is_ok()
+}
+
 pub fn normalize_raw_node(index: usize, mut raw: Value) -> Result<NodeSummary> {
     let obj = raw
         .as_object_mut()
         .context("proxy node entry must be a mapping/object")?;
-    if !obj.contains_key("host")
-        && let Some(server) = obj.get("server").cloned()
-    {
-        obj.insert("host".to_string(), server);
-    }
-    if let Some(Value::Bool(skip)) = obj.get("skip-cert-verify") {
-        obj.insert("insecure".to_string(), Value::Bool(*skip));
-    }
-    let server = obj
+    let raw_server = obj
         .get("host")
-        .or_else(|| obj.get("server"))
         .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| obj.get("server").and_then(Value::as_str))
+        .map(strip_ipv6_brackets)
+        .unwrap_or_default();
+    if !raw_server.is_empty() {
+        obj.insert("host".to_string(), Value::String(raw_server.clone()));
+        obj.insert("server".to_string(), Value::String(raw_server.clone()));
+    }
+    if !obj.get("insecure").and_then(Value::as_bool).unwrap_or(false) {
+        for key in ["skip-cert-verify", "skip_cert_verify", "allow_insecure"] {
+            if let Some(Value::Bool(skip)) = obj.get(key) {
+                obj.insert("insecure".to_string(), Value::Bool(*skip));
+                break;
+            }
+        }
+    }
+    let current_sni = obj
+        .get("sni")
+        .and_then(Value::as_str)
+        .map(strip_ipv6_brackets)
+        .unwrap_or_default();
+    if current_sni.is_empty() || is_ip_literal(&current_sni) {
+        let fallback_sni = ["server_name", "servername", "server-name"]
+            .into_iter()
+            .find_map(|k| {
+                obj.get(k)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty() && !is_ip_literal(s))
+                    .map(ToString::to_string)
+            })
+            .or_else(|| {
+                let tls = obj.get("tls")?.as_object()?;
+                ["server_name", "servername", "server-name"]
+                    .into_iter()
+                    .find_map(|k| {
+                        tls.get(k)
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty() && !is_ip_literal(s))
+                            .map(ToString::to_string)
+                    })
+            });
+        if let Some(sni) = fallback_sni {
+            obj.insert("sni".to_string(), Value::String(sni));
+        } else if !current_sni.is_empty() {
+            obj.remove("sni");
+        }
+    }
+    let server = raw_server;
     let port = obj
         .get("port")
         .and_then(|v| {
@@ -194,18 +247,34 @@ pub fn normalize_raw_node(index: usize, mut raw: Value) -> Result<NodeSummary> {
         .map(ToString::to_string)
         .unwrap_or_else(|| format!("Node {}", index + 1));
     let udp = obj.get("udp").and_then(Value::as_bool).unwrap_or(true);
-    let tags = obj
-        .get("tags")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let mut tags = Vec::new();
+    match obj.get("tags") {
+        Some(Value::Array(arr)) => {
+            for item in arr {
+                if let Some(s) = item.as_str().map(str::trim).filter(|s| !s.is_empty())
+                    && !tags.iter().any(|t| t == s)
+                {
+                    tags.push(s.to_string());
+                }
+            }
+        }
+        Some(Value::String(raw_tags)) => {
+            for part in raw_tags.split([',', '|']) {
+                let s = part.trim();
+                if !s.is_empty() && !tags.iter().any(|t| t == s) {
+                    tags.push(s.to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+    for key in ["tag", "label", "group"] {
+        if let Some(s) = obj.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+            && !tags.iter().any(|t| t == s)
+        {
+            tags.push(s.to_string());
+        }
+    }
     let dummy_listen = "127.0.0.1:1080".parse().expect("valid loopback addr");
     let supported = node_to_proxy_config(&raw, dummy_listen).is_ok();
     Ok(NodeSummary {
