@@ -9,8 +9,10 @@ public sealed class NetoClient : IDisposable
     private readonly DispatcherQueue _dispatcher;
     private readonly DispatcherQueueTimer _timer;
     private int _tickCount;
+    private bool _autoRefreshing;
     private bool _disposed;
 
+    public string DataDir { get; }
     public NetoSnapshot Snapshot { get; private set; } = new();
     public string? LastActionError { get; private set; }
     public bool Busy { get; private set; }
@@ -19,6 +21,7 @@ public sealed class NetoClient : IDisposable
 
     public NetoClient(string dataDir, string appId, string userAgent, DispatcherQueue dispatcher)
     {
+        DataDir = dataDir;
         _dispatcher = dispatcher;
         Directory.CreateDirectory(dataDir);
         var initNode = NetoNativeBridge.Init(dataDir, appId, userAgent);
@@ -46,10 +49,41 @@ public sealed class NetoClient : IDisposable
                 {
                     _ = NetoNativeBridge.CallAsync("probe_tunnel");
                 }
+                if (_tickCount % 60 == 0 && !_autoRefreshing)
+                {
+                    var active = snap.ActiveProfile;
+                    var nowUnix = NetoFormat.NowUnixMs() / 1000UL;
+                    if (active != null && !string.IsNullOrWhiteSpace(active.Url) && active.AutoUpdateMins > 0 &&
+                        nowUnix > active.UpdatedAtUnix && (nowUnix - active.UpdatedAtUnix) >= active.AutoUpdateMins * 60UL)
+                    {
+                        _ = AutoRefreshProfileAsync(active.Id);
+                    }
+                }
             }
         }
         catch
         {
+        }
+    }
+
+    private async Task AutoRefreshProfileAsync(string profileId)
+    {
+        _autoRefreshing = true;
+        try
+        {
+            var res = await NetoNativeBridge.CallAsync("refresh_profile", new { id = profileId });
+            var snap = res.Deserialize<NetoSnapshot>();
+            if (snap != null)
+            {
+                EnqueueUi(() => { Snapshot = snap; SnapshotChanged?.Invoke(snap); });
+            }
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _autoRefreshing = false;
         }
     }
 
@@ -75,6 +109,7 @@ public sealed class NetoClient : IDisposable
     public Task SetSystemProxyAsync(bool enabled) => InvokeSnapshotCallAsync("set_system_proxy_enabled", new { enabled });
     public Task SetTunEnabledAsync(bool enabled) => InvokeSnapshotCallAsync("set_tun_enabled", new { enabled });
     public Task UpdateSettingsAsync(JsonObject patch) => InvokeSnapshotCallAsync("update_settings", patch);
+    public Task UpdateNetworkSettingsAsync(JsonObject patch) => InvokeSnapshotCallAsync("update_network_settings", patch);
     public Task RefreshProfileAsync(string? id = null) =>
         InvokeSnapshotCallAsync("refresh_profile", id is null ? new { } : new { id });
     public Task SelectProfileAsync(string id) => InvokeSnapshotCallAsync("select_profile", new { id });
@@ -197,6 +232,12 @@ public sealed class NetoClient : IDisposable
     }
 
     public Task ClearLogsAsync() => NetoNativeBridge.CallAsync("clear_logs");
+
+    public async Task<NetoRouteTestResult> TestRouteAsync(string target, string network = "tcp")
+    {
+        var res = await NetoNativeBridge.CallAsync("test_route", new { target, network });
+        return res.Deserialize<NetoRouteTestResult>() ?? new NetoRouteTestResult();
+    }
 
     private async Task InvokeSnapshotCallAsync(string method, object? parameters)
     {

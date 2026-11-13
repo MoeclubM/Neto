@@ -9,20 +9,25 @@ namespace Neto.Sdk.Windows.Views;
 public sealed class DashboardPageView
 {
     public ScrollViewer Root { get; }
+    public StackPanel HeaderActions { get; }
     private readonly NetoClient _client;
     private readonly Action _onOpenNodes;
     private readonly Action? _onOpenProfiles;
+    private readonly Action? _onRequestElevation;
     private readonly StackPanel _extraHeaderHost;
     private readonly StackPanel _customizePanel;
-    private readonly StackPanel _cardsPanel;
+    private readonly Grid _cardsGrid;
     private readonly Button _customizeBtn;
     private readonly Button _resetBtn;
     private bool _customizing;
+    private bool _updating;
     private string _lastLayoutSig = "";
     private string _lastCustomizeSig = "";
 
     private NetoDualSeriesChart? _speedChart;
     private NetoDualSeriesChart? _latencyChart;
+    private ToggleSwitch? _spSwitch;
+    private ToggleSwitch? _tunSwitch;
     private TextBlock? _trafficTitle;
     private TextBlock? _trafficSub;
     private ProgressBar? _quotaBar;
@@ -30,24 +35,32 @@ public sealed class DashboardPageView
     private TextBlock? _runtimeTitle;
     private TextBlock? _runtimeSub;
 
-    public DashboardPageView(NetoClient client, Action onOpenNodes, Action? onOpenProfiles = null)
+    public DashboardPageView(
+        NetoClient client,
+        Action onOpenNodes,
+        Action? onOpenProfiles = null,
+        Action? onRequestElevation = null,
+        bool detachHeaderActions = false)
     {
         _client = client;
         _onOpenNodes = onOpenNodes;
         _onOpenProfiles = onOpenProfiles;
+        _onRequestElevation = onRequestElevation;
 
         var outer = new StackPanel
         {
-            MaxWidth = 820,
+            MaxWidth = 860,
             Spacing = 10,
-            Padding = new Thickness(18, 12, 18, 24),
+            Padding = new Thickness(18, 8, 18, 24),
         };
 
         _extraHeaderHost = new StackPanel { Spacing = 8 };
         _customizePanel = new StackPanel { Spacing = 6, Visibility = Visibility.Collapsed };
-        _cardsPanel = new StackPanel { Spacing = 10 };
+        _cardsGrid = new Grid { ColumnSpacing = 10, RowSpacing = 10 };
+        _cardsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        _cardsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-        var toolbar = new StackPanel
+        HeaderActions = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
@@ -70,14 +83,17 @@ public sealed class DashboardPageView
             _customizePanel.Visibility = _customizing ? Visibility.Visible : Visibility.Collapsed;
             if (_customizing) RebuildCustomizePanel(_client.Snapshot);
         };
-        toolbar.Children.Add(_resetBtn);
-        toolbar.Children.Add(_customizeBtn);
+        HeaderActions.Children.Add(_resetBtn);
+        HeaderActions.Children.Add(_customizeBtn);
 
         outer.Children.Add(_extraHeaderHost);
-        outer.Children.Add(toolbar);
+        if (!detachHeaderActions)
+        {
+            outer.Children.Add(HeaderActions);
+        }
         outer.Children.Add(_customizePanel);
-        outer.Children.Add(_cardsPanel);
-        Root = new ScrollViewer { Content = outer };
+        outer.Children.Add(_cardsGrid);
+        Root = NetoUiFactory.CreateCenteredScrollViewer(outer);
     }
 
     public void SetExtraHeader(UIElement? element)
@@ -100,10 +116,9 @@ public sealed class DashboardPageView
         var layoutSig = string.Join("|",
             widgetSig,
             snap.Settings.RoutingMode,
-            snap.Settings.SystemProxyEnabled,
-            snap.Settings.TunEnabled,
             snap.Connection.HttpProxyAddr,
             snap.Connection.Connected,
+            snap.Connection.CanUseTun,
             sel?.Name ?? "",
             sel?.LatencyMs?.ToString() ?? "",
             prof?.Id ?? "",
@@ -156,9 +171,12 @@ public sealed class DashboardPageView
 
     private void RebuildCards(NetoSnapshot snap)
     {
-        _cardsPanel.Children.Clear();
+        _cardsGrid.Children.Clear();
+        _cardsGrid.RowDefinitions.Clear();
         _speedChart = null;
         _latencyChart = null;
+        _spSwitch = null;
+        _tunSwitch = null;
         _trafficTitle = null;
         _trafficSub = null;
         _quotaBar = null;
@@ -166,19 +184,20 @@ public sealed class DashboardPageView
         _runtimeTitle = null;
         _runtimeSub = null;
 
+        var builtCards = new List<FrameworkElement>();
         foreach (var w in snap.Settings.DashboardWidgets.Where(x => x.Enabled))
         {
             switch (w.Id)
             {
                 case "network_speed":
-                    _cardsPanel.Children.Add(NetoUiFactory.CreateSectionHeader("实时速率"));
-                    _speedChart = new NetoDualSeriesChart(Color.FromArgb(255, 46, 184, 128), Color.FromArgb(255, 56, 132, 235));
-                    _cardsPanel.Children.Add(_speedChart.Root);
+                    _speedChart = new NetoDualSeriesChart(Color.FromArgb(255, 46, 184, 128), Color.FromArgb(255, 56, 132, 235), "实时速率");
+                    builtCards.Add(_speedChart.Root);
                     break;
 
                 case "outbound_mode":
-                    _cardsPanel.Children.Add(NetoUiFactory.CreateSectionHeader("出站模式"));
-                    var mGrid = new Grid { ColumnSpacing = 8 };
+                    var mStack = new StackPanel { Spacing = 8 };
+                    mStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("出站模式"));
+                    var mGrid = new Grid { ColumnSpacing = 6 };
                     for (var i = 0; i < 3; i++) mGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                     var modes = new[] { ("rule", "规则"), ("global", "全局"), ("direct", "直连") };
                     for (var i = 0; i < modes.Length; i++)
@@ -190,125 +209,163 @@ public sealed class DashboardPageView
                         Grid.SetColumn(btn, i);
                         mGrid.Children.Add(btn);
                     }
-                    _cardsPanel.Children.Add(mGrid);
+                    mStack.Children.Add(mGrid);
+                    builtCards.Add(NetoUiFactory.CreateCard(mStack));
                     break;
 
                 case "current_outbound":
-                    _cardsPanel.Children.Add(NetoUiFactory.CreateSectionHeader("当前节点"));
                     var sel = snap.SelectedNode;
-                    var nStack = new StackPanel { Spacing = 2 };
-                    nStack.Children.Add(new TextBlock { Text = sel?.Name ?? "暂无可用节点", FontWeight = FontWeights.SemiBold });
+                    var isDirect = snap.Settings.RoutingMode == "direct";
+                    var switchNodeBtn = new Button { Content = "切换", Padding = new Thickness(10, 3, 10, 3) };
+                    switchNodeBtn.Click += (_, _) => _onOpenNodes();
+                    var nStack = new StackPanel { Spacing = 4 };
+                    nStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("当前节点", switchNodeBtn));
                     nStack.Children.Add(new TextBlock
                     {
-                        Text = sel != null ? (sel.LatencyMs.HasValue ? $"{sel.ProtocolLabel} · {sel.LatencyMs.Value} ms" : sel.ProtocolLabel) : "前往节点页选择",
+                        Text = isDirect ? "DIRECT" : (sel?.Name ?? "暂无可用节点"),
+                        FontWeight = FontWeights.SemiBold,
+                        TextTrimming = TextTrimming.CharacterEllipsis,
+                    });
+                    nStack.Children.Add(new TextBlock
+                    {
+                        Text = isDirect ? "直连出站" : (sel != null ? (sel.LatencyMs.HasValue ? $"{sel.ProtocolLabel} · {sel.LatencyMs.Value} ms" : sel.ProtocolLabel) : "前往节点页选择"),
                         FontSize = 12,
                         Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
                     });
-                    var nBtn = new Button
-                    {
-                        HorizontalAlignment = HorizontalAlignment.Stretch,
-                        HorizontalContentAlignment = HorizontalAlignment.Left,
-                        Padding = new Thickness(14, 10, 14, 10),
-                        Content = nStack,
-                    };
-                    nBtn.Click += (_, _) => _onOpenNodes();
-                    _cardsPanel.Children.Add(nBtn);
+                    builtCards.Add(NetoUiFactory.CreateCard(nStack));
                     break;
 
                 case "network_takeover":
-                    _cardsPanel.Children.Add(NetoUiFactory.CreateSectionHeader("网络接管"));
-                    var tGrid = new Grid { ColumnSpacing = 16 };
+                    FrameworkElement? elevHeaderAction = null;
+                    if (!snap.Connection.CanUseTun && _onRequestElevation != null)
+                    {
+                        var eb = new Button { Content = "提权", Padding = new Thickness(8, 2, 8, 2), FontSize = 11 };
+                        eb.Click += (_, _) => _onRequestElevation();
+                        elevHeaderAction = eb;
+                    }
+                    var tkStack = new StackPanel { Spacing = 6 };
+                    var portStr = string.IsNullOrEmpty(snap.Connection.HttpProxyAddr) ? $"端口 {snap.Settings.MixedPort}" : snap.Connection.HttpProxyAddr;
+                    tkStack.Children.Add(NetoUiFactory.CreateInlineCardHeader($"网络接管 · {portStr}", elevHeaderAction));
+                    var tGrid = new Grid { ColumnSpacing = 8 };
                     tGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                     tGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                    var spSw = new ToggleSwitch
+                    _spSwitch = new ToggleSwitch { OffContent = "系统代理", OnContent = "系统代理", IsOn = snap.Settings.SystemProxyEnabled, MinWidth = 0 };
+                    _spSwitch.Toggled += async (_, _) => { if (!_updating) await _client.SetSystemProxyAsync(_spSwitch.IsOn); };
+                    _tunSwitch = new ToggleSwitch { OffContent = "TUN 接管", OnContent = "TUN 接管", IsOn = snap.Settings.TunEnabled, MinWidth = 0 };
+                    _tunSwitch.Toggled += async (_, _) =>
                     {
-                        Header = string.IsNullOrEmpty(snap.Connection.HttpProxyAddr) ? $"系统代理 ({snap.Settings.MixedPort})" : $"系统代理 ({snap.Connection.HttpProxyAddr})",
-                        IsOn = snap.Settings.SystemProxyEnabled,
+                        if (_updating) return;
+                        if (_tunSwitch.IsOn && !_client.Snapshot.Connection.CanUseTun && _onRequestElevation != null)
+                        {
+                            _updating = true;
+                            _tunSwitch.IsOn = false;
+                            _updating = false;
+                            _onRequestElevation();
+                            return;
+                        }
+                        await _client.SetTunEnabledAsync(_tunSwitch.IsOn);
                     };
-                    spSw.Toggled += async (_, _) => await _client.SetSystemProxyAsync(spSw.IsOn);
-                    var tunSw = new ToggleSwitch
-                    {
-                        Header = $"TUN 网卡 (MTU {snap.Settings.Mtu})",
-                        IsOn = snap.Settings.TunEnabled,
-                    };
-                    tunSw.Toggled += async (_, _) => await _client.SetTunEnabledAsync(tunSw.IsOn);
-                    Grid.SetColumn(tunSw, 1);
-                    tGrid.Children.Add(spSw);
-                    tGrid.Children.Add(tunSw);
-                    _cardsPanel.Children.Add(NetoUiFactory.CreateCard(tGrid));
+                    Grid.SetColumn(_tunSwitch, 1);
+                    tGrid.Children.Add(_spSwitch);
+                    tGrid.Children.Add(_tunSwitch);
+                    tkStack.Children.Add(tGrid);
+                    builtCards.Add(NetoUiFactory.CreateCard(tkStack));
                     break;
 
                 case "traffic_usage":
-                    _cardsPanel.Children.Add(NetoUiFactory.CreateSectionHeader("流量统计"));
                     var trStack = new StackPanel { Spacing = 4 };
-                    _trafficTitle = new TextBlock { FontWeight = FontWeights.SemiBold };
-                    _trafficSub = new TextBlock { FontSize = 12, Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray) };
+                    trStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("流量统计"));
+                    _trafficTitle = new TextBlock { FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
+                    _trafficSub = new TextBlock { FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray) };
                     trStack.Children.Add(_trafficTitle);
                     trStack.Children.Add(_trafficSub);
                     if (snap.ActiveProfile is { TotalBytes: > 0 })
                     {
-                        _quotaText = new TextBlock { FontSize = 12, Margin = new Thickness(0, 6, 0, 2) };
+                        _quotaText = new TextBlock { FontSize = 12, Margin = new Thickness(0, 4, 0, 2) };
                         _quotaBar = new ProgressBar { Minimum = 0, Maximum = 100 };
                         trStack.Children.Add(_quotaText);
                         trStack.Children.Add(_quotaBar);
                     }
-                    _cardsPanel.Children.Add(NetoUiFactory.CreateCard(trStack));
+                    builtCards.Add(NetoUiFactory.CreateCard(trStack));
                     break;
 
                 case "profiles_summary":
-                    _cardsPanel.Children.Add(NetoUiFactory.CreateSectionHeader("订阅概览"));
                     var prof = snap.ActiveProfile;
-                    var pGrid = new Grid();
-                    pGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                    pGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                    var pInfo = new StackPanel { Spacing = 2 };
-                    pInfo.Children.Add(new TextBlock { Text = prof?.Name ?? "未配置订阅", FontWeight = FontWeights.SemiBold });
-                    pInfo.Children.Add(new TextBlock
-                    {
-                        Text = prof != null ? $"{prof.NodeCount} 节点 · {prof.RuleCount} 规则" : "前往订阅页添加",
-                        FontSize = 12,
-                        Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
-                    });
-                    pGrid.Children.Add(pInfo);
                     var pActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
                     if (prof != null && !string.IsNullOrEmpty(prof.Url))
                     {
-                        var rBtn = new Button { Content = "刷新" };
+                        var rBtn = new Button { Content = "刷新", Padding = new Thickness(8, 3, 8, 3) };
                         rBtn.Click += async (_, _) => await _client.RefreshProfileAsync(prof.Id);
                         pActions.Children.Add(rBtn);
                     }
                     if (_onOpenProfiles != null)
                     {
-                        var mBtn = new Button { Content = "管理" };
+                        var mBtn = new Button { Content = "管理", Padding = new Thickness(8, 3, 8, 3) };
                         mBtn.Click += (_, _) => _onOpenProfiles();
                         pActions.Children.Add(mBtn);
                     }
-                    Grid.SetColumn(pActions, 1);
-                    pGrid.Children.Add(pActions);
-                    _cardsPanel.Children.Add(NetoUiFactory.CreateCard(pGrid));
+                    var pStack = new StackPanel { Spacing = 4 };
+                    pStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("订阅概览", pActions));
+                    pStack.Children.Add(new TextBlock { Text = prof?.Name ?? "未配置订阅", FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
+                    pStack.Children.Add(new TextBlock
+                    {
+                        Text = prof != null ? $"{prof.NodeCount} 节点 · {prof.RuleCount} 规则" : "前往订阅页导入配置",
+                        FontSize = 12,
+                        Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                    });
+                    builtCards.Add(NetoUiFactory.CreateCard(pStack));
                     break;
 
                 case "latency_probe":
-                    _cardsPanel.Children.Add(NetoUiFactory.CreateSectionHeader("连通延迟"));
-                    _latencyChart = new NetoDualSeriesChart(Color.FromArgb(255, 56, 132, 235));
-                    _cardsPanel.Children.Add(_latencyChart.Root);
+                    var probeBtn = new Button { Content = "探测", Padding = new Thickness(8, 2, 8, 2), FontSize = 11 };
+                    probeBtn.Click += async (_, _) =>
+                    {
+                        probeBtn.IsEnabled = false;
+                        try { await _client.ProbeTunnelAsync(); }
+                        finally { probeBtn.IsEnabled = true; }
+                    };
+                    _latencyChart = new NetoDualSeriesChart(Color.FromArgb(255, 56, 132, 235), null, "连通延迟", probeBtn);
+                    builtCards.Add(_latencyChart.Root);
                     break;
 
                 case "runtime_info":
-                    _cardsPanel.Children.Add(NetoUiFactory.CreateSectionHeader("运行信息"));
                     var rStack = new StackPanel { Spacing = 4 };
-                    _runtimeTitle = new TextBlock { FontWeight = FontWeights.SemiBold };
-                    _runtimeSub = new TextBlock { FontSize = 12, Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray) };
+                    rStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("运行信息"));
+                    _runtimeTitle = new TextBlock { FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
+                    _runtimeSub = new TextBlock { FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray) };
                     rStack.Children.Add(_runtimeTitle);
                     rStack.Children.Add(_runtimeSub);
-                    _cardsPanel.Children.Add(NetoUiFactory.CreateCard(rStack));
+                    builtCards.Add(NetoUiFactory.CreateCard(rStack));
                     break;
             }
+        }
+
+        var totalRows = (builtCards.Count + 1) / 2;
+        for (var r = 0; r < totalRows; r++)
+        {
+            _cardsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        }
+        for (var i = 0; i < builtCards.Count; i++)
+        {
+            var card = builtCards[i];
+            card.VerticalAlignment = VerticalAlignment.Stretch;
+            Grid.SetRow(card, i / 2);
+            Grid.SetColumn(card, i % 2);
+            if (i == builtCards.Count - 1 && builtCards.Count % 2 == 1)
+            {
+                Grid.SetColumnSpan(card, 2);
+            }
+            _cardsGrid.Children.Add(card);
         }
     }
 
     private void UpdateLiveValues(NetoSnapshot snap)
     {
+        _updating = true;
+        if (_spSwitch != null) _spSwitch.IsOn = snap.Settings.SystemProxyEnabled;
+        if (_tunSwitch != null) _tunSwitch.IsOn = snap.Settings.TunEnabled;
+        _updating = false;
+
         _speedChart?.Update(
             $"↑ {NetoFormat.FormatSpeed(snap.Telemetry.UploadSpeedBps)}  ↓ {NetoFormat.FormatSpeed(snap.Telemetry.DownloadSpeedBps)}",
             snap.Telemetry.UploadHistory.Select(v => (double)v).ToList(),
@@ -336,7 +393,9 @@ public sealed class DashboardPageView
         if (_runtimeTitle != null && _runtimeSub != null)
         {
             var ips = string.Join(" · ", new[] { snap.Telemetry.IntranetIpv4, snap.Telemetry.IntranetIpv6 }.Where(s => !string.IsNullOrWhiteSpace(s)));
-            _runtimeTitle.Text = $"内网地址 {(string.IsNullOrEmpty(ips) ? "-" : ips)}";
+            var fullAddr = $"内网地址 {(string.IsNullOrEmpty(ips) ? "-" : ips)}";
+            _runtimeTitle.Text = fullAddr;
+            ToolTipService.SetToolTip(_runtimeTitle, fullAddr);
             _runtimeSub.Text = $"活跃会话 {snap.Telemetry.ActiveSessions} · 内存 {NetoFormat.FormatBytes(snap.Telemetry.MemoryBytes)}";
         }
     }

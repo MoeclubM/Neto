@@ -14,7 +14,7 @@ includeBuild("deps/neto") {
 }
 ```
 
-2. 在应用模块依赖 `implementation("moe.telecom.neto:sdk:0.0.1")`，即可直接复用：
+2. 在应用模块依赖 `implementation("moe.telecom.neto:sdk:0.0.2")`，即可直接复用：
    - `NetoControllerClient`（包含 `upsertManagedProfile` 商业订阅注入接口）
    - `NetoVpnService`（通过 Manifest Merge 自动注册）
    - `NetoConnectPane`（支持传入 `blockedContent` 商业套餐到期提示槽位）
@@ -29,7 +29,7 @@ includeBuild("deps/neto") {
 <ProjectReference Include="..\..\deps\neto\sdk\windows\Neto.Sdk.Windows.csproj" />
 ```
 
-2. 将构建生成的 `neto_ffi.dll`（或聚合导出库）与 `wintun.dll` 放入输出目录，即可直接使用 `NetoClient`、`Win32TrayIcon`、`ConnectPageView`、`DashboardPageView`、`NodesPageView` 与 `SettingsPageView`。
+2. 将构建生成的 `neto_ffi.dll`（或聚合导出库）与 `wintun.dll` 放入输出目录，即可直接使用 `NetoClient`、`SingleInstanceGuard`、`NetoWindowHelper`、`Win32TrayIcon`、`ConnectPageView`、`DashboardPageView`、`NodesPageView` 与 `SettingsPageView`。
 
 ## Linux Wayland (GTK4 + libadwaita) 集成
 

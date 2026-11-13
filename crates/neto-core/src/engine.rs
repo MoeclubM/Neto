@@ -139,6 +139,7 @@ impl NetoController {
             .as_ref()
             .map(|b| format!("127.0.0.1:{}", b.port()))
             .unwrap_or_default();
+        let can_use_tun = self.hooks.can_use_tun();
 
         let connection = match &guard.active {
             Some(rt) => ConnectionSnapshot {
@@ -155,6 +156,7 @@ impl NetoController {
                 http_proxy_addr,
                 system_proxy_active: guard.system_proxy_active,
                 tun_active: rt.kind == SessionKind::Tun,
+                can_use_tun,
                 active_node_name: rt.node_name.clone(),
                 active_node_protocol: rt.node_protocol.clone(),
                 last_error: guard.last_error.clone(),
@@ -173,6 +175,7 @@ impl NetoController {
                 http_proxy_addr,
                 system_proxy_active: guard.system_proxy_active,
                 tun_active: false,
+                can_use_tun,
                 active_node_name: String::new(),
                 active_node_protocol: String::new(),
                 last_error: guard.last_error.clone(),
@@ -1284,6 +1287,13 @@ impl NetoController {
                     .and_then(Value::as_str)
                     .context("missing proxy_name")?;
                 self.select_group_proxy(group, proxy)?;
+                #[cfg(not(target_os = "android"))]
+                {
+                    let is_active = self.state.lock().expect("controller state lock poisoned").active.is_some();
+                    if is_active {
+                        self.connect().await?;
+                    }
+                }
                 Ok(serde_json::to_value(self.snapshot())?)
             }
             "set_node_sort" => {
@@ -1339,6 +1349,17 @@ impl NetoController {
             }
             "update_settings" => {
                 self.update_settings(&params)?;
+                Ok(serde_json::to_value(self.snapshot())?)
+            }
+            "update_network_settings" => {
+                self.update_settings(&params)?;
+                #[cfg(not(target_os = "android"))]
+                {
+                    let is_active = self.state.lock().expect("controller state lock poisoned").active.is_some();
+                    if is_active {
+                        self.connect().await?;
+                    }
+                }
                 Ok(serde_json::to_value(self.snapshot())?)
             }
             "add_remote_profile" => {

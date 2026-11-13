@@ -14,6 +14,7 @@ public sealed class NetoConnection
     [JsonPropertyName("http_proxy_addr")] public string HttpProxyAddr { get; set; } = "";
     [JsonPropertyName("system_proxy_active")] public bool SystemProxyActive { get; set; }
     [JsonPropertyName("tun_active")] public bool TunActive { get; set; }
+    [JsonPropertyName("can_use_tun")] public bool CanUseTun { get; set; }
     [JsonPropertyName("active_node_name")] public string ActiveNodeName { get; set; } = "";
     [JsonPropertyName("active_node_protocol")] public string ActiveNodeProtocol { get; set; } = "";
     [JsonPropertyName("last_error")] public string? LastError { get; set; }
@@ -149,6 +150,15 @@ public sealed class NetoLogEntry
     [JsonPropertyName("message")] public string Message { get; set; } = "";
 }
 
+public sealed class NetoRouteTestResult
+{
+    [JsonPropertyName("target")] public string Target { get; set; } = "";
+    [JsonPropertyName("network")] public string Network { get; set; } = "tcp";
+    [JsonPropertyName("decision")] public string Decision { get; set; } = "";
+    [JsonPropertyName("outbound")] public string? Outbound { get; set; }
+    [JsonPropertyName("matched_rule")] public string MatchedRule { get; set; } = "";
+}
+
 public static class NetoFormat
 {
     public static string FormatBytes(ulong bytes)
@@ -177,4 +187,22 @@ public static class NetoFormat
 
     public static ulong NowUnixMs() =>
         (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+    public static string FormatLogTimestamp(ulong timestampMs)
+    {
+        if (timestampMs == 0) return "--:--:--";
+        return DateTimeOffset.FromUnixTimeMilliseconds((long)timestampMs).ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+    }
+
+    public static string FormatUnixTimeShort(ulong unixSec)
+    {
+        if (unixSec == 0) return "-";
+        return DateTimeOffset.FromUnixTimeSeconds((long)unixSec).ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture);
+    }
+
+    public static string FormatUnixDate(ulong unixSec)
+    {
+        if (unixSec == 0) return "-";
+        return DateTimeOffset.FromUnixTimeSeconds((long)unixSec).ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    }
 }

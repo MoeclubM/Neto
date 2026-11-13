@@ -185,6 +185,8 @@ pub struct ConnectionSnapshot {
     pub http_proxy_addr: String,
     pub system_proxy_active: bool,
     pub tun_active: bool,
+    #[serde(default)]
+    pub can_use_tun: bool,
     pub active_node_name: String,
     pub active_node_protocol: String,
     pub last_error: Option<String>,

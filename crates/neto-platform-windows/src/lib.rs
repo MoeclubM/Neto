@@ -47,7 +47,9 @@ mod imp {
             } else {
                 raw.trim().to_string()
             };
-            Arc::new(Self { app_id: cleaned })
+            let hooks = Self { app_id: cleaned };
+            let _ = restore_backed_up_proxy(&hooks.backup_key_path());
+            Arc::new(hooks)
         }
 
         fn backup_key_path(&self) -> String {
