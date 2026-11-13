@@ -7,6 +7,33 @@ val appMinApi = 33
 val compileApi = 37
 val targetApi = 36
 
+fun gitText(vararg args: String): String = runCatching {
+    val process = ProcessBuilder("git", *args)
+        .directory(rootProject.projectDir)
+        .redirectErrorStream(true)
+        .start()
+    val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+    if (process.waitFor() == 0) output else ""
+}.getOrDefault("")
+
+val gitCommitTimestamp = gitText("log", "-1", "--format=%ct").toIntOrNull() ?: 1
+val gitShortHash = gitText("rev-parse", "--short=8", "HEAD").ifEmpty { "dev" }
+val gitExactTag = gitText("describe", "--tags", "--exact-match", "HEAD")
+val gitLatestTag = gitText("describe", "--tags", "--abbrev=0")
+val gitCommitsSinceLatestTag = if (gitLatestTag.isNotEmpty()) {
+    gitText("rev-list", "$gitLatestTag..HEAD", "--count").ifEmpty { "0" }
+} else {
+    ""
+}
+val appVersionCode = gitCommitTimestamp
+val appVersionName = gitExactTag.removePrefix("v").ifEmpty {
+    if (gitLatestTag.isNotEmpty()) {
+        "${gitLatestTag.removePrefix("v")}-beta.$gitCommitsSinceLatestTag.$gitShortHash"
+    } else {
+        "0.0.1-$gitShortHash"
+    }
+}
+
 android {
     namespace = "moe.telecom.neto"
     compileSdk {
@@ -21,8 +48,8 @@ android {
         applicationId = "moe.telecom.neto"
         minSdk = appMinApi
         targetSdk = targetApi
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
     }
 
     buildTypes {

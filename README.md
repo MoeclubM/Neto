@@ -27,9 +27,13 @@
 | `sdk/android` | Android Library（`moe.telecom.neto:sdk`），提供 `NetoVpnService`、`NetoControllerClient` 与 Compose 页面组件 |
 | `sdk/windows` | Windows WinUI 3 类库（`Neto.Sdk.Windows`），提供 P/Invoke 客户端、Win32 托盘与可复用原生页面组件 |
 | `apps/android` | 独立 Android 客户端（`moe.telecom.neto`） |
-| `apps/windows` | 独立 Windows WinUI 3 客户端（`Neto.exe`） |
+| `apps/windows` | 独立 Windows WinUI 3 客户端（`Neto.exe`，提供原生安装程序 `-setup.exe` 与免安装便携包 `-windows-x64.zip`） |
 | `apps/linux` | 独立 Linux Wayland GTK4/libadwaita 客户端（`neto`） |
 | `third_party/` | 经过补丁适配的 `tun2proxy` 与 `socks5-impl` |
+
+## 版本规范
+
+在正式版（`1.0.0`）发布前，版本号统一采用 `0.0.x` 递增（自 `v0.0.1` 起）。
 
 ## 文档索引
 

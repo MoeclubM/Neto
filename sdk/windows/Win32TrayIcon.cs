@@ -28,6 +28,7 @@ public sealed class Win32TrayIcon : IDisposable
     private readonly IntPtr _hwnd;
     private readonly IntPtr _origWndProc;
     private readonly WndProcDelegate _wndProcDelegate;
+    private readonly IntPtr _ownedIcon;
     private NOTIFYICONDATAW _nid;
     private bool _disposed;
 
@@ -46,6 +47,7 @@ public sealed class Win32TrayIcon : IDisposable
         _hwnd = windowHandle;
         _wndProcDelegate = SubclassWndProc;
         _origWndProc = SetWindowLongPtrW(_hwnd, GWLP_WNDPROC, Marshal.GetFunctionPointerForDelegate(_wndProcDelegate));
+        _ownedIcon = TryExtractProcessSmallIcon();
 
         _nid = new NOTIFYICONDATAW
         {
@@ -54,10 +56,17 @@ public sealed class Win32TrayIcon : IDisposable
             uID = 1001,
             uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP,
             uCallbackMessage = WM_TRAYICON,
-            hIcon = LoadIconW(IntPtr.Zero, IDI_APPLICATION),
+            hIcon = _ownedIcon != IntPtr.Zero ? _ownedIcon : LoadIconW(IntPtr.Zero, IDI_APPLICATION),
             szTip = TruncateTip(tooltip),
         };
         Shell_NotifyIconW(NIM_ADD, ref _nid);
+    }
+
+    private static IntPtr TryExtractProcessSmallIcon()
+    {
+        var exePath = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(exePath)) return IntPtr.Zero;
+        return ExtractIconExW(exePath, 0, IntPtr.Zero, out var smallIcon, 1) > 0 ? smallIcon : IntPtr.Zero;
     }
 
     public void UpdateTooltip(string tooltip)
@@ -127,6 +136,10 @@ public sealed class Win32TrayIcon : IDisposable
         if (_disposed) return;
         _disposed = true;
         Shell_NotifyIconW(NIM_DELETE, ref _nid);
+        if (_ownedIcon != IntPtr.Zero)
+        {
+            DestroyIcon(_ownedIcon);
+        }
         if (_origWndProc != IntPtr.Zero)
         {
             SetWindowLongPtrW(_hwnd, GWLP_WNDPROC, _origWndProc);
@@ -152,8 +165,14 @@ public sealed class Win32TrayIcon : IDisposable
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern bool Shell_NotifyIconW(uint dwMessage, ref NOTIFYICONDATAW lpData);
 
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint ExtractIconExW(string lpszFile, int nIconIndex, IntPtr phiconLarge, out IntPtr phiconSmall, uint nIcons);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr LoadIconW(IntPtr hInstance, IntPtr lpIconName);
+
+    [DllImport("user32.dll")]
+    private static extern bool DestroyIcon(IntPtr hIcon);
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
     private static extern IntPtr SetWindowLongPtrW(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
