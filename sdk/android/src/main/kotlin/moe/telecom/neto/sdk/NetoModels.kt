@@ -186,6 +186,16 @@ data class NetoRouteTestResult(
     val matchedRule: String = "",
 )
 
+data class NetoUpdateCheckResult(
+    val currentVersion: String = "",
+    val latestVersion: String = "",
+    val hasUpdate: Boolean = false,
+    val releaseUrl: String = "",
+    val releaseNotes: String = "",
+    val downloadUrl: String = "",
+    val downloadName: String = "",
+)
+
 data class NetoTelemetry(
     val uploadBytes: Long = 0L,
     val downloadBytes: Long = 0L,

@@ -290,6 +290,25 @@ class NetoControllerClient(
         )
     }
 
+    suspend fun checkUpdate(repo: String, currentVersion: String): NetoUpdateCheckResult = withContext(Dispatchers.IO) {
+        val obj = NetoBridge.call(
+            "check_update",
+            JSONObject()
+                .put("repo", repo)
+                .put("current_version", currentVersion)
+                .put("prefer_installer", true),
+        ).getJSONObject("result")
+        NetoUpdateCheckResult(
+            currentVersion = obj.optString("current_version", currentVersion),
+            latestVersion = obj.optString("latest_version", ""),
+            hasUpdate = obj.optBoolean("has_update", false),
+            releaseUrl = obj.optString("release_url", ""),
+            releaseNotes = obj.optString("release_notes", ""),
+            downloadUrl = obj.optString("download_url", ""),
+            downloadName = obj.optString("download_name", ""),
+        )
+    }
+
     fun setRoutingMode(mode: String) {
         val wasConnected = _snapshot.value.connection.connected
         scope.launch(Dispatchers.IO) {

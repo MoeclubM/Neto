@@ -24,6 +24,7 @@ use crate::state::{
     RoutingMode,
 };
 use crate::telemetry;
+use crate::updater;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -2003,6 +2004,67 @@ impl NetoController {
                     .to_string(),
                 )?;
                 Ok(serde_json::from_str(&out_str)?)
+            }
+            "check_update" => {
+                let repo = params
+                    .get("repo")
+                    .and_then(Value::as_str)
+                    .context("missing repo")?;
+                let current_version = params
+                    .get("current_version")
+                    .and_then(Value::as_str)
+                    .unwrap_or(env!("CARGO_PKG_VERSION"));
+                let platform = params.get("platform").and_then(Value::as_str);
+                let arch = params.get("arch").and_then(Value::as_str);
+                let prefer_installer = params
+                    .get("prefer_installer")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                let local_proxy_port = {
+                    let st = self.state.lock().expect("controller state lock poisoned");
+                    if st.active.is_some() {
+                        st.http_bridge.as_ref().map(|b| b.port())
+                    } else {
+                        None
+                    }
+                };
+                let info = updater::check_github_release(
+                    repo,
+                    current_version,
+                    platform,
+                    arch,
+                    prefer_installer,
+                    local_proxy_port,
+                    &self.user_agent,
+                )
+                .await?;
+                Ok(serde_json::to_value(info)?)
+            }
+            "download_update" => {
+                let url = params
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .context("missing url")?;
+                let dest_path = params
+                    .get("dest_path")
+                    .and_then(Value::as_str)
+                    .context("missing dest_path")?;
+                let local_proxy_port = {
+                    let st = self.state.lock().expect("controller state lock poisoned");
+                    if st.active.is_some() {
+                        st.http_bridge.as_ref().map(|b| b.port())
+                    } else {
+                        None
+                    }
+                };
+                let out = updater::download_release_asset(
+                    url,
+                    dest_path,
+                    local_proxy_port,
+                    &self.user_agent,
+                )
+                .await?;
+                Ok(serde_json::to_value(out)?)
             }
             other => Err(anyhow!("unknown Neto method: {other}")),
         }

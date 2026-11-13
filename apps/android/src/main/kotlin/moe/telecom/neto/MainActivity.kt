@@ -215,6 +215,8 @@ private fun NetoStandaloneApp(
                     logs = logs,
                     installedApps = installedApps,
                     client = client,
+                    updateRepo = "MoeclubM/Neto",
+                    appVersion = BuildConfig.VERSION_NAME,
                 )
             }
         }

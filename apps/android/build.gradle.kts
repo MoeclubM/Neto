@@ -30,7 +30,7 @@ val appVersionName = gitExactTag.removePrefix("v").ifEmpty {
     if (gitLatestTag.isNotEmpty()) {
         "${gitLatestTag.removePrefix("v")}-beta.$gitCommitsSinceLatestTag.$gitShortHash"
     } else {
-        "0.0.5-$gitShortHash"
+        "0.0.6-$gitShortHash"
     }
 }
 
@@ -60,6 +60,7 @@ android {
     }
 
     buildFeatures {
+        buildConfig = true
         compose = true
     }
 

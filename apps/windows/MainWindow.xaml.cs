@@ -58,6 +58,11 @@ public sealed partial class MainWindow : Window
         _rulesView = new RulesPageView(_client, detachHeaderActions: true, ownerHwnd: _hwnd);
         _profilesView = new ProfilesPageView(_client, _hwnd);
         _settingsView = new SettingsPageView(_client, ApplyThemeMode);
+        _settingsView.ConfigureUpdater(
+            "MoeclubM/Neto",
+            NetoWindowHelper.GetAppVersion(),
+            () => RootGrid.XamlRoot,
+            ExitApplication);
 
         NavProfilesItem.Tapped += (_, _) => _profilesView.ResetToRoot();
         NavSettingsItem.Tapped += (_, _) => _settingsView.ResetToRoot();
@@ -92,6 +97,12 @@ public sealed partial class MainWindow : Window
             NetoWindowHelper.SetClipboardText(NetoWindowHelper.BuildTerminalProxyCommand(_client.Snapshot));
         });
         _tray.CloseAllConnectionsRequested += () => DispatcherQueue.TryEnqueue(async () => await _client.CloseAllConnectionsAsync());
+        _tray.CheckUpdateRequested += () => DispatcherQueue.TryEnqueue(async () =>
+        {
+            NetoWindowHelper.RestoreAndActivate(this, _appWindow, _hwnd);
+            SwitchTab("settings");
+            await _settingsView.CheckForUpdatesAsync(true);
+        });
         _tray.SessionEnding += () => NetoNativeBridge.Shutdown();
         _tray.ExitRequested += () => DispatcherQueue.TryEnqueue(ExitApplication);
 
@@ -105,6 +116,16 @@ public sealed partial class MainWindow : Window
         if (StartedHidden)
         {
             _appWindow.Hide();
+        }
+        _ = TriggerStartupUpdateCheckAsync();
+    }
+
+    private async Task TriggerStartupUpdateCheckAsync()
+    {
+        await Task.Delay(4000);
+        if (!_quitting)
+        {
+            DispatcherQueue.TryEnqueue(async () => await _settingsView.CheckForUpdatesAsync(false));
         }
     }
 

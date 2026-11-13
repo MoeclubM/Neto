@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.UI.Windowing;
@@ -194,6 +195,33 @@ public static class NetoWindowHelper
     {
         if (!Directory.Exists(path)) Directory.CreateDirectory(path);
         Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
+    }
+
+    public static void OpenUrl(string url)
+    {
+        var target = (url ?? "").Trim();
+        if (string.IsNullOrEmpty(target)) return;
+        Process.Start(new ProcessStartInfo { FileName = target, UseShellExecute = true });
+    }
+
+    public static bool IsInstallerSetup() =>
+        File.Exists(Path.Combine(AppContext.BaseDirectory, "unins000.exe"));
+
+    public static string GetAppVersion()
+    {
+        var entry = Assembly.GetEntryAssembly();
+        var info = entry?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        if (!string.IsNullOrWhiteSpace(info))
+        {
+            var plusIdx = info.IndexOf('+');
+            return (plusIdx >= 0 ? info[..plusIdx] : info).Trim();
+        }
+        var ver = entry?.GetName().Version;
+        if (ver != null)
+        {
+            return $"{ver.Major}.{ver.Minor}.{Math.Max(0, ver.Build)}";
+        }
+        return "0.0.0";
     }
 
     public static bool SetClipboardText(string text)

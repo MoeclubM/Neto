@@ -7,6 +7,7 @@ use serde_json::json;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
+use tokio::runtime::Handle;
 
 pub struct SettingsView {
     pub root: gtk::Stack,
@@ -23,6 +24,11 @@ pub struct SettingsView {
     bypass_row: adw::EntryRow,
     dns_entry_row: adw::ActionRow,
     logs_entry_row: adw::ActionRow,
+    version_row: adw::ActionRow,
+    check_update_btn: gtk::Button,
+    update_repo: Rc<RefCell<String>>,
+    current_version: Rc<RefCell<String>>,
+    pending_update_url: Rc<RefCell<String>>,
     log_level: Rc<RefCell<String>>,
     log_filter: Rc<RefCell<String>>,
     logs_buffer: gtk::TextBuffer,
@@ -100,8 +106,25 @@ impl SettingsView {
         adv_group.add(&tools_entry_row);
         adv_group.add(&logs_entry_row);
 
+        let about_group = adw::PreferencesGroup::builder().title("关于").build();
+        let init_ver = option_env!("NETO_APP_VERSION")
+            .unwrap_or(env!("CARGO_PKG_VERSION"))
+            .trim_start_matches('v')
+            .to_string();
+        let version_row = adw::ActionRow::builder()
+            .title("客户端版本")
+            .subtitle(format!("v{init_ver}"))
+            .build();
+        let check_update_btn = gtk::Button::builder()
+            .label("检查更新")
+            .valign(gtk::Align::Center)
+            .build();
+        version_row.add_suffix(&check_update_btn);
+        about_group.add(&version_row);
+
         main_page.add(&general_group);
         main_page.add(&adv_group);
+        main_page.add(&about_group);
         stack.add_named(&main_page, Some("root"));
 
         let dns_page = adw::PreferencesPage::new();
@@ -305,6 +328,100 @@ impl SettingsView {
             });
         }
 
+        let update_repo = Rc::new(RefCell::new("MoeclubM/Neto".to_string()));
+        let current_version = Rc::new(RefCell::new(init_ver));
+        let pending_update_url = Rc::new(RefCell::new(String::new()));
+        if let Ok(rt_handle) = Handle::try_current() {
+            let ctrl = controller.clone();
+            let repo_ref = update_repo.clone();
+            let ver_ref = current_version.clone();
+            let url_ref = pending_update_url.clone();
+            let row_ref = version_row.clone();
+            let btn_ref = check_update_btn.clone();
+            check_update_btn.connect_clicked(move |btn| {
+                let cached = url_ref.borrow().clone();
+                if !cached.is_empty() {
+                    let _ = std::process::Command::new("xdg-open").arg(&cached).spawn();
+                    return;
+                }
+                let repo = repo_ref.borrow().clone();
+                let cur_ver = ver_ref.borrow().clone();
+                if repo.is_empty() {
+                    return;
+                }
+                btn.set_sensitive(false);
+                btn.set_label("检查中…");
+                let ctrl = ctrl.clone();
+                let (tx, rx) = std::sync::mpsc::channel();
+                rt_handle.spawn(async move {
+                    let res = ctrl
+                        .dispatch_json(
+                            "check_update",
+                            json!({
+                                "repo": repo,
+                                "current_version": cur_ver,
+                                "prefer_installer": true,
+                            }),
+                        )
+                        .await
+                        .map_err(|e| format!("{e:#}"));
+                    let _ = tx.send(res);
+                });
+                let row_c = row_ref.clone();
+                let btn_c = btn_ref.clone();
+                let url_c = url_ref.clone();
+                let ver_c = ver_ref.clone();
+                gtk::glib::timeout_add_local(std::time::Duration::from_millis(80), move || {
+                    match rx.try_recv() {
+                        Ok(Ok(val)) => {
+                            btn_c.set_sensitive(true);
+                            let has_upd = val
+                                .get("has_update")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            let latest = val
+                                .get("latest_version")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let cur = ver_c.borrow().clone();
+                            if has_upd {
+                                let dl = val
+                                    .get("download_url")
+                                    .and_then(|v| v.as_str())
+                                    .filter(|s| !s.is_empty())
+                                    .or_else(|| val.get("release_url").and_then(|v| v.as_str()))
+                                    .unwrap_or("")
+                                    .to_string();
+                                *url_c.borrow_mut() = dl;
+                                row_c.set_subtitle(&format!("v{cur} · 发现新版本 {latest}"));
+                                btn_c.set_label("下载更新");
+                                btn_c.add_css_class("suggested-action");
+                            } else {
+                                row_c.set_subtitle(&format!("v{cur} · 已是最新版本"));
+                                btn_c.set_label("检查更新");
+                            }
+                            gtk::glib::ControlFlow::Break
+                        }
+                        Ok(Err(err)) => {
+                            btn_c.set_sensitive(true);
+                            btn_c.set_label("检查更新");
+                            let cur = ver_c.borrow().clone();
+                            row_c.set_subtitle(&format!("v{cur} · {err}"));
+                            gtk::glib::ControlFlow::Break
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            gtk::glib::ControlFlow::Continue
+                        }
+                        Err(_) => {
+                            btn_c.set_sensitive(true);
+                            btn_c.set_label("检查更新");
+                            gtk::glib::ControlFlow::Break
+                        }
+                    }
+                });
+            });
+        }
+
         Rc::new(Self {
             root: stack,
             main_page,
@@ -320,6 +437,11 @@ impl SettingsView {
             bypass_row,
             dns_entry_row,
             logs_entry_row,
+            version_row,
+            check_update_btn,
+            update_repo,
+            current_version,
+            pending_update_url,
             log_level,
             log_filter,
             logs_buffer,
@@ -329,6 +451,21 @@ impl SettingsView {
 
     pub fn add_group(&self, group: &adw::PreferencesGroup) {
         self.main_page.add(group);
+    }
+
+    pub fn configure_updater(&self, repo: &str, version: &str) {
+        let trimmed_repo = repo.trim();
+        let trimmed_ver = version.trim().trim_start_matches(['v', 'V']);
+        if !trimmed_repo.is_empty() {
+            *self.update_repo.borrow_mut() = trimmed_repo.to_string();
+        }
+        if !trimmed_ver.is_empty() {
+            *self.current_version.borrow_mut() = trimmed_ver.to_string();
+            self.version_row.set_subtitle(&format!("v{trimmed_ver}"));
+        }
+        *self.pending_update_url.borrow_mut() = String::new();
+        self.check_update_btn.set_label("检查更新");
+        self.check_update_btn.remove_css_class("suggested-action");
     }
 
     pub fn reset_to_root(&self) {

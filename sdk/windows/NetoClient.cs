@@ -392,6 +392,27 @@ public sealed class NetoClient : IDisposable
         return res.Deserialize<NetoRouteTestResult>() ?? new NetoRouteTestResult();
     }
 
+    public async Task<NetoUpdateCheckResult> CheckUpdateAsync(string repo, string currentVersion, bool preferInstaller = true)
+    {
+        var res = await NetoNativeBridge.CallAsync("check_update", new
+        {
+            repo,
+            current_version = currentVersion,
+            prefer_installer = preferInstaller,
+        });
+        return res.Deserialize<NetoUpdateCheckResult>() ?? new NetoUpdateCheckResult();
+    }
+
+    public async Task<NetoDownloadUpdateResult> DownloadUpdateAsync(string url, string destPath)
+    {
+        var res = await NetoNativeBridge.CallAsync("download_update", new
+        {
+            url,
+            dest_path = destPath,
+        });
+        return res.Deserialize<NetoDownloadUpdateResult>() ?? new NetoDownloadUpdateResult();
+    }
+
     private async Task InvokeSnapshotCallAsync(string method, object? parameters)
     {
         EnqueueUi(() => { LastActionError = null; });

@@ -13,6 +13,7 @@ pub mod runtime;
 pub mod state;
 pub mod telemetry;
 pub mod tun_service;
+pub mod updater;
 
 pub use connections::{
     ActiveConnectionEntry, ConnectionsSnapshot, clear_closed_connections, close_all_connections,
@@ -40,3 +41,6 @@ pub use state::{
     ConnectionSnapshot, EngineSnapshot, NetoSettings, NodeSortMode, ProfileBrief, RoutingMode,
 };
 pub use telemetry::{LogEntry, TelemetrySnapshot};
+pub use updater::{
+    DownloadUpdateResult, UpdateCheckResult, check_github_release, download_release_asset,
+};

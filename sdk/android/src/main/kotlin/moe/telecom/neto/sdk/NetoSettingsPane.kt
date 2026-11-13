@@ -1,5 +1,8 @@
 package moe.telecom.neto.sdk
 
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -16,11 +19,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Button
@@ -30,6 +37,7 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.CheckboxPreference
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
@@ -43,11 +51,18 @@ fun NetoSettingsPane(
     installedApps: List<InstalledAppEntry>,
     client: NetoControllerClient,
     modifier: Modifier = Modifier,
+    updateRepo: String = "",
+    appVersion: String = "",
     extraHeaderSlot: (@Composable () -> Unit)? = null,
     extraFooterSlot: (@Composable () -> Unit)? = null,
 ) {
     val settings = snapshot.settings
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var subpage by rememberSaveable { mutableStateOf("root") }
+    var checkingUpdate by remember { mutableStateOf(false) }
+    var pendingUpdate by remember { mutableStateOf<NetoUpdateCheckResult?>(null) }
+    var showUpdateDialog by remember { mutableStateOf(false) }
 
     BackHandler(enabled = subpage != "root") {
         subpage = "root"
@@ -205,10 +220,79 @@ fun NetoSettingsPane(
                 }
             }
 
+            if (updateRepo.isNotBlank() && appVersion.isNotBlank()) {
+                item(key = "about-update") {
+                    SmallTitle("关于")
+                    NetoPreferenceCard {
+                        ArrowPreference(
+                            title = "检查更新",
+                            summary = if (checkingUpdate) "正在检查…" else "当前版本 v${appVersion.removePrefix("v")}",
+                            onClick = {
+                                if (checkingUpdate) return@ArrowPreference
+                                checkingUpdate = true
+                                scope.launch {
+                                    try {
+                                        val res = client.checkUpdate(updateRepo, appVersion)
+                                        if (res.hasUpdate) {
+                                            pendingUpdate = res
+                                            showUpdateDialog = true
+                                        } else {
+                                            Toast.makeText(context, "已是最新版本", Toast.LENGTH_SHORT).show()
+                                        }
+                                    } catch (err: Throwable) {
+                                        Toast.makeText(context, "检查更新失败：${err.message}", Toast.LENGTH_SHORT).show()
+                                    } finally {
+                                        checkingUpdate = false
+                                    }
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+
             if (extraFooterSlot != null) {
                 item(key = "extra-footer") {
                     extraFooterSlot()
                 }
+            }
+        }
+    }
+
+    val updateInfo = pendingUpdate
+    if (updateInfo != null) {
+        OverlayDialog(
+            show = showUpdateDialog,
+            title = "发现新版本 ${updateInfo.latestVersion}",
+            summary = buildString {
+                append("当前版本 v${appVersion.removePrefix("v")} → 最新版本 ${updateInfo.latestVersion}")
+                if (updateInfo.releaseNotes.isNotBlank()) {
+                    append("\n\n")
+                    append(updateInfo.releaseNotes)
+                }
+            },
+            onDismissRequest = { showUpdateDialog = false },
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                TextButton(
+                    text = "稍后",
+                    onClick = { showUpdateDialog = false },
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    text = "下载更新",
+                    onClick = {
+                        showUpdateDialog = false
+                        val target = updateInfo.downloadUrl.ifBlank { updateInfo.releaseUrl }
+                        if (target.isNotBlank()) {
+                            runCatching {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                            }
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.textButtonColorsPrimary(),
+                )
             }
         }
     }

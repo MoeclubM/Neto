@@ -70,6 +70,10 @@ fn main() -> anyhow::Result<()> {
         let rules_view = RulesView::new(ctrl_activate.clone(), handle_activate.clone());
         let profiles_view = ProfilesView::new(ctrl_activate.clone(), handle_activate.clone());
         let settings_view = SettingsView::new(ctrl_activate.clone());
+        settings_view.configure_updater(
+            "MoeclubM/Neto",
+            option_env!("NETO_APP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+        );
 
         stack.add_titled_with_icon(
             &home_view.root,

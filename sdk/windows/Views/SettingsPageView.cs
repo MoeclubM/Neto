@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 using Microsoft.UI;
+using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -46,7 +48,17 @@ public sealed class SettingsPageView
     private readonly ComboBox _logLevelCombo;
     private readonly TextBox _logSearchBox;
     private readonly TextBox _logsBox;
+    private readonly TextBlock _versionSubtitleText;
+    private readonly StackPanel _updateBadgeHost;
+    private readonly TextBlock _updateFeedbackText;
+    private readonly Button _checkUpdateBtn;
     private readonly StackPanel _extraFooterHost;
+    private string _updateRepo = "MoeclubM/Neto";
+    private string _currentVersion = NetoWindowHelper.GetAppVersion();
+    private Func<XamlRoot?>? _xamlRootProvider;
+    private Action? _onQuitForInstaller;
+    private NetoUpdateCheckResult? _cachedUpdate;
+    private bool _checkingUpdate;
     private bool _updating;
     private bool _inputsInitialized;
     private bool _inputsDirty;
@@ -221,6 +233,36 @@ public sealed class SettingsPageView
         PlaceGridCell(navGrid, logsNav, 1, 0);
         Grid.SetColumnSpan(logsNav, 2);
         _rootPane.Children.Add(navGrid);
+
+        var versionGrid = new Grid { ColumnSpacing = 12, MinHeight = 34 };
+        versionGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        versionGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var versionLeft = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        versionLeft.Children.Add(new TextBlock { Text = "客户端版本", FontSize = 13 });
+        _versionSubtitleText = new TextBlock
+        {
+            Text = $"v{_currentVersion}",
+            FontSize = 11,
+            Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+        };
+        versionLeft.Children.Add(_versionSubtitleText);
+        _updateFeedbackText = new TextBlock
+        {
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Visibility = Visibility.Collapsed,
+        };
+        _updateBadgeHost = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        _checkUpdateBtn = new Button { Content = "检查更新" };
+        _checkUpdateBtn.Click += async (_, _) => await CheckForUpdatesAsync(true);
+        var versionRight = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        versionRight.Children.Add(_updateFeedbackText);
+        versionRight.Children.Add(_updateBadgeHost);
+        versionRight.Children.Add(_checkUpdateBtn);
+        Grid.SetColumn(versionRight, 1);
+        versionGrid.Children.Add(versionLeft);
+        versionGrid.Children.Add(versionRight);
+        _rootPane.Children.Add(NetoUiFactory.CreateCard(versionGrid));
 
         _extraFooterHost = new StackPanel { Spacing = 10 };
         _rootPane.Children.Add(_extraFooterHost);
@@ -438,6 +480,192 @@ public sealed class SettingsPageView
     {
         _extraFooterHost.Children.Clear();
         if (element != null) _extraFooterHost.Children.Add(element);
+    }
+
+    public void ConfigureUpdater(
+        string repoSlug,
+        string currentVersion,
+        Func<XamlRoot?> xamlRootProvider,
+        Action? onQuitForInstaller = null)
+    {
+        if (!string.IsNullOrWhiteSpace(repoSlug)) _updateRepo = repoSlug.Trim();
+        if (!string.IsNullOrWhiteSpace(currentVersion)) _currentVersion = currentVersion.Trim().TrimStart('v', 'V');
+        _xamlRootProvider = xamlRootProvider;
+        _onQuitForInstaller = onQuitForInstaller;
+        _versionSubtitleText.Text = $"v{_currentVersion}";
+    }
+
+    public async Task CheckForUpdatesAsync(bool manual = true)
+    {
+        if (_checkingUpdate || string.IsNullOrWhiteSpace(_updateRepo)) return;
+        if (manual && _cachedUpdate is { HasUpdate: true } cached)
+        {
+            await ShowUpdateDialogAsync(cached);
+            return;
+        }
+        _checkingUpdate = true;
+        _checkUpdateBtn.IsEnabled = false;
+        if (manual)
+        {
+            _checkUpdateBtn.Content = "检查中…";
+            _updateFeedbackText.Visibility = Visibility.Collapsed;
+        }
+        try
+        {
+            var res = await _client.CheckUpdateAsync(_updateRepo, _currentVersion, NetoWindowHelper.IsInstallerSetup());
+            _cachedUpdate = res;
+            _updateBadgeHost.Children.Clear();
+            if (res.HasUpdate)
+            {
+                _updateBadgeHost.Children.Add(NetoUiFactory.CreateTagBadge(
+                    $"新版本 {res.LatestVersion}",
+                    Color.FromArgb(255, 42, 168, 118)));
+                _checkUpdateBtn.Content = "查看更新";
+                NetoUiFactory.ApplyPrimaryButton(_checkUpdateBtn, true);
+                if (manual)
+                {
+                    await ShowUpdateDialogAsync(res);
+                }
+            }
+            else
+            {
+                _checkUpdateBtn.Content = "检查更新";
+                NetoUiFactory.ApplyPrimaryButton(_checkUpdateBtn, false);
+                if (manual)
+                {
+                    _updateFeedbackText.Foreground = new SolidColorBrush(Color.FromArgb(255, 42, 168, 118));
+                    _updateFeedbackText.Text = "已是最新版本";
+                    _updateFeedbackText.Visibility = Visibility.Visible;
+                    _ = Task.Run(async () =>
+                    {
+                        await Task.Delay(2500);
+                        Root.DispatcherQueue.TryEnqueue(() =>
+                        {
+                            if (_updateFeedbackText.Text == "已是最新版本")
+                            {
+                                _updateFeedbackText.Visibility = Visibility.Collapsed;
+                            }
+                        });
+                    });
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _checkUpdateBtn.Content = "检查更新";
+            if (manual)
+            {
+                _updateFeedbackText.Foreground = new SolidColorBrush(Color.FromArgb(255, 216, 82, 76));
+                _updateFeedbackText.Text = ex.Message;
+                _updateFeedbackText.Visibility = Visibility.Visible;
+            }
+        }
+        finally
+        {
+            _checkingUpdate = false;
+            _checkUpdateBtn.IsEnabled = true;
+        }
+    }
+
+    private async Task ShowUpdateDialogAsync(NetoUpdateCheckResult info)
+    {
+        var xamlRoot = _xamlRootProvider?.Invoke() ?? Root.XamlRoot;
+        if (xamlRoot == null) return;
+
+        var bodyStack = new StackPanel { Spacing = 10, MinWidth = 380 };
+        bodyStack.Children.Add(new TextBlock
+        {
+            Text = $"当前版本 v{_currentVersion}  →  最新版本 {info.LatestVersion}",
+            FontWeight = FontWeights.SemiBold,
+        });
+        if (!string.IsNullOrWhiteSpace(info.ReleaseNotes))
+        {
+            bodyStack.Children.Add(new ScrollViewer
+            {
+                MaxHeight = 240,
+                Content = new TextBlock
+                {
+                    Text = info.ReleaseNotes,
+                    TextWrapping = TextWrapping.Wrap,
+                    FontSize = 12,
+                    IsTextSelectionEnabled = true,
+                    Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                },
+            });
+        }
+        var progressBar = new ProgressBar { IsIndeterminate = true, Visibility = Visibility.Collapsed };
+        var statusText = new TextBlock
+        {
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Visibility = Visibility.Collapsed,
+        };
+        bodyStack.Children.Add(progressBar);
+        bodyStack.Children.Add(statusText);
+
+        var hasSetup = !string.IsNullOrWhiteSpace(info.InstallerUrl);
+        var dialog = new ContentDialog
+        {
+            XamlRoot = xamlRoot,
+            Title = $"发现新版本 {info.LatestVersion}",
+            PrimaryButtonText = hasSetup ? "下载并安装" : "前往下载页",
+            SecondaryButtonText = hasSetup ? "打开发布页" : "",
+            CloseButtonText = "稍后",
+            DefaultButton = ContentDialogButton.Primary,
+            Content = bodyStack,
+        };
+
+        dialog.SecondaryButtonClick += (_, _) =>
+        {
+            if (!string.IsNullOrWhiteSpace(info.ReleaseUrl))
+            {
+                NetoWindowHelper.OpenUrl(info.ReleaseUrl);
+            }
+        };
+
+        dialog.PrimaryButtonClick += async (sender, args) =>
+        {
+            if (!hasSetup)
+            {
+                var targetUrl = !string.IsNullOrWhiteSpace(info.DownloadUrl) ? info.DownloadUrl : info.ReleaseUrl;
+                NetoWindowHelper.OpenUrl(targetUrl);
+                return;
+            }
+
+            args.Cancel = true;
+            sender.IsPrimaryButtonEnabled = false;
+            sender.IsSecondaryButtonEnabled = false;
+            progressBar.Visibility = Visibility.Visible;
+            statusText.Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray);
+            statusText.Text = "正在下载安装包…";
+            statusText.Visibility = Visibility.Visible;
+
+            var fileName = string.IsNullOrWhiteSpace(info.InstallerName)
+                ? $"update-{info.LatestVersion}-setup.exe"
+                : Path.GetFileName(info.InstallerName);
+            var destPath = Path.Combine(Path.GetTempPath(), "NetoUpdates", fileName);
+            try
+            {
+                var dl = await _client.DownloadUpdateAsync(info.InstallerUrl, destPath);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = dl.Path,
+                    UseShellExecute = true,
+                });
+                sender.Hide();
+                _onQuitForInstaller?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                progressBar.Visibility = Visibility.Collapsed;
+                statusText.Foreground = new SolidColorBrush(Color.FromArgb(255, 216, 82, 76));
+                statusText.Text = $"下载失败：{ex.Message}";
+                sender.IsPrimaryButtonEnabled = true;
+                sender.IsSecondaryButtonEnabled = true;
+            }
+        };
+
+        await dialog.ShowAsync();
     }
 
     public void ApplySnapshot(NetoSnapshot snap)

@@ -229,6 +229,28 @@ public sealed class NetoRouteTestResult
     [JsonPropertyName("matched_rule")] public string MatchedRule { get; set; } = "";
 }
 
+public sealed class NetoUpdateCheckResult
+{
+    [JsonPropertyName("current_version")] public string CurrentVersion { get; set; } = "";
+    [JsonPropertyName("latest_version")] public string LatestVersion { get; set; } = "";
+    [JsonPropertyName("has_update")] public bool HasUpdate { get; set; }
+    [JsonPropertyName("release_url")] public string ReleaseUrl { get; set; } = "";
+    [JsonPropertyName("release_notes")] public string ReleaseNotes { get; set; } = "";
+    [JsonPropertyName("published_at")] public string PublishedAt { get; set; } = "";
+    [JsonPropertyName("download_url")] public string DownloadUrl { get; set; } = "";
+    [JsonPropertyName("download_name")] public string DownloadName { get; set; } = "";
+    [JsonPropertyName("installer_url")] public string InstallerUrl { get; set; } = "";
+    [JsonPropertyName("installer_name")] public string InstallerName { get; set; } = "";
+    [JsonPropertyName("archive_url")] public string ArchiveUrl { get; set; } = "";
+    [JsonPropertyName("archive_name")] public string ArchiveName { get; set; } = "";
+}
+
+public sealed class NetoDownloadUpdateResult
+{
+    [JsonPropertyName("path")] public string Path { get; set; } = "";
+    [JsonPropertyName("bytes")] public ulong Bytes { get; set; }
+}
+
 public static class NetoFormat
 {
     public static string FormatBytes(ulong bytes)
