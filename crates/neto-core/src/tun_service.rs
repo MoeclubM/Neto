@@ -52,8 +52,15 @@ pub struct TunSpec {
 
 impl TunSpec {
     pub fn to_config(&self) -> Result<TunConfig> {
-        ensure!(self.socks_addr.ip().is_loopback(), "TUN 上游必须是本机回环地址");
-        ensure!((1280..=9000).contains(&self.mtu), "无效的 TUN MTU: {}", self.mtu);
+        ensure!(
+            self.socks_addr.ip().is_loopback(),
+            "TUN 上游必须是本机回环地址"
+        );
+        ensure!(
+            (1280..=9000).contains(&self.mtu),
+            "无效的 TUN MTU: {}",
+            self.mtu
+        );
         let mut cfg = TunConfig::new(aerion::socks_proxy_url(self.socks_addr));
         cfg.setup = true;
         cfg.mtu = self.mtu;
@@ -133,7 +140,11 @@ pub async fn start_with_stream<S: AsyncRead + AsyncWrite + Send + 'static>(
     let reply_line = lines.next_line().await?.context("TUN 服务未响应")?;
     let reply: TunReply = serde_json::from_str(&reply_line).context("解析 TUN 服务响应失败")?;
     if !reply.ok {
-        bail!(reply.error.unwrap_or_else(|| "TUN 服务启动失败".to_string()));
+        bail!(
+            reply
+                .error
+                .unwrap_or_else(|| "TUN 服务启动失败".to_string())
+        );
     }
     let token = TunCancellationToken::new();
     let task_token = token.clone();

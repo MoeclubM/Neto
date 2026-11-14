@@ -50,10 +50,7 @@ impl DashboardWidgetId {
     pub fn default_enabled(self) -> bool {
         matches!(
             self,
-            Self::NetworkSpeed
-                | Self::TrafficUsage
-                | Self::ExitCheck
-                | Self::ProfilesSummary
+            Self::NetworkSpeed | Self::TrafficUsage | Self::ExitCheck | Self::ProfilesSummary
         )
     }
 }
@@ -92,7 +89,10 @@ pub fn default_dashboard_widgets() -> Vec<DashboardWidgetItem> {
 pub fn normalize_dashboard_widgets(items: &[DashboardWidgetItem]) -> Vec<DashboardWidgetItem> {
     let mut out = Vec::with_capacity(DashboardWidgetId::ALL.len());
     for item in items {
-        if !out.iter().any(|existing: &DashboardWidgetItem| existing.id == item.id) {
+        if !out
+            .iter()
+            .any(|existing: &DashboardWidgetItem| existing.id == item.id)
+        {
             out.push(item.clone());
         }
     }

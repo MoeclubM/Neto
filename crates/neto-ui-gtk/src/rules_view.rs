@@ -81,7 +81,9 @@ impl RulesView {
         filter_bar.append(&toggle_tester_btn);
         filter_bar.append(&refresh_btn);
 
-        let tester_group = adw::PreferencesGroup::builder().title("规则匹配测试").build();
+        let tester_group = adw::PreferencesGroup::builder()
+            .title("规则匹配测试")
+            .build();
         tester_group.set_visible(false);
         let target_row = adw::EntryRow::builder().title("域名或 IP").build();
         let net_combo = adw::ComboRow::builder()
@@ -93,7 +95,10 @@ impl RulesView {
         run_test_btn.add_css_class("suggested-action");
         run_test_btn.set_valign(gtk::Align::Center);
         target_row.add_suffix(&run_test_btn);
-        let result_row = adw::ActionRow::builder().title("匹配结果").subtitle("-").build();
+        let result_row = adw::ActionRow::builder()
+            .title("匹配结果")
+            .subtitle("-")
+            .build();
         result_row.set_use_markup(false);
         tester_group.add(&target_row);
         tester_group.add(&net_combo);
@@ -119,7 +124,9 @@ impl RulesView {
             .build();
         let override_outer = gtk::Box::new(gtk::Orientation::Vertical, 12);
 
-        let quick_group = adw::PreferencesGroup::builder().title("快捷添加规则").build();
+        let quick_group = adw::PreferencesGroup::builder()
+            .title("快捷添加规则")
+            .build();
         let type_combo = adw::ComboRow::builder()
             .title("规则类型")
             .model(&gtk::StringList::new(&RULE_TYPES))
@@ -204,7 +211,9 @@ impl RulesView {
             rules_list_box,
             rule_count_label,
             target_combo: target_combo.clone(),
-            target_options: RefCell::new(default_targets.iter().map(|s| (*s).to_string()).collect()),
+            target_options: RefCell::new(
+                default_targets.iter().map(|s| (*s).to_string()).collect(),
+            ),
             route_buffer: route_buffer.clone(),
             override_dirty: override_dirty.clone(),
             override_initialized: Cell::new(false),
@@ -260,7 +269,11 @@ impl RulesView {
                 if target.is_empty() {
                     return;
                 }
-                let net = if net_combo.selected() == 1 { "udp" } else { "tcp" };
+                let net = if net_combo.selected() == 1 {
+                    "udp"
+                } else {
+                    "tcp"
+                };
                 let ctrl = ctrl.clone();
                 let (tx, rx) = std::sync::mpsc::channel();
                 handle.spawn(async move {
@@ -271,8 +284,9 @@ impl RulesView {
                     let _ = tx.send(res);
                 });
                 let row_c = result_row.clone();
-                gtk::glib::timeout_add_local(std::time::Duration::from_millis(80), move || {
-                    match rx.try_recv() {
+                gtk::glib::timeout_add_local(
+                    std::time::Duration::from_millis(80),
+                    move || match rx.try_recv() {
                         Ok(Ok(val)) => {
                             let dec = val.get("decision").and_then(|v| v.as_str()).unwrap_or("-");
                             let out = val
@@ -296,8 +310,8 @@ impl RulesView {
                             gtk::glib::ControlFlow::Continue
                         }
                         Err(_) => gtk::glib::ControlFlow::Break,
-                    }
-                });
+                    },
+                );
             });
         }
         {
@@ -334,8 +348,9 @@ impl RulesView {
                 let v_c = v.clone();
                 let fb_c = fb.clone();
                 let mr_c = match_row.clone();
-                gtk::glib::timeout_add_local(std::time::Duration::from_millis(80), move || {
-                    match rx.try_recv() {
+                gtk::glib::timeout_add_local(
+                    std::time::Duration::from_millis(80),
+                    move || match rx.try_recv() {
                         Ok(Ok(_)) => {
                             mr_c.set_text("");
                             let snap = v_c.controller.snapshot();
@@ -357,8 +372,8 @@ impl RulesView {
                             gtk::glib::ControlFlow::Continue
                         }
                         Err(_) => gtk::glib::ControlFlow::Break,
-                    }
-                });
+                    },
+                );
             });
         }
         {
@@ -373,7 +388,10 @@ impl RulesView {
                         false,
                     )
                     .to_string();
-                match v.controller.update_settings(&json!({ "custom_route_yaml": yaml })) {
+                match v
+                    .controller
+                    .update_settings(&json!({ "custom_route_yaml": yaml }))
+                {
                     Ok(_) => {
                         v.override_dirty.set(false);
                         fb.remove_css_class("error");
@@ -405,7 +423,9 @@ impl RulesView {
             reset_route_btn.connect_clicked(move |_| {
                 v.route_buffer.set_text("");
                 v.override_dirty.set(false);
-                let _ = v.controller.update_settings(&json!({ "custom_route_yaml": "" }));
+                let _ = v
+                    .controller
+                    .update_settings(&json!({ "custom_route_yaml": "" }));
                 fb.remove_css_class("error");
                 fb.set_text("已恢复订阅默认规则");
                 fb.set_visible(true);

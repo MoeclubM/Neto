@@ -101,7 +101,9 @@ impl ProfilesView {
             .build();
         let adv_outer = gtk::Box::new(gtk::Orientation::Vertical, 12);
 
-        let remote_group = adw::PreferencesGroup::builder().title("远程订阅参数").build();
+        let remote_group = adw::PreferencesGroup::builder()
+            .title("远程订阅参数")
+            .build();
         let name_row = adw::EntryRow::builder().title("备注名称（可选）").build();
         let url_row = adw::EntryRow::builder().title("订阅链接 URL").build();
         let flag_row = adw::ComboRow::builder()
@@ -117,7 +119,9 @@ impl ProfilesView {
         remote_group.add(&flag_row);
         remote_group.add(&url_row);
 
-        let local_group = adw::PreferencesGroup::builder().title("本地 YAML 配置").build();
+        let local_group = adw::PreferencesGroup::builder()
+            .title("本地 YAML 配置")
+            .build();
         let yaml_view = gtk::TextView::new();
         yaml_view.set_monospace(true);
         let yaml_scroll = gtk::ScrolledWindow::builder()
@@ -176,8 +180,9 @@ impl ProfilesView {
                 let btn_c = btn.clone();
                 let qrow_c = qrow.clone();
                 let slbl_c = slbl.clone();
-                gtk::glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
-                    match rx.try_recv() {
+                gtk::glib::timeout_add_local(
+                    std::time::Duration::from_millis(120),
+                    move || match rx.try_recv() {
                         Ok(Ok(_)) => {
                             btn_c.set_sensitive(true);
                             qrow_c.set_text("");
@@ -197,8 +202,8 @@ impl ProfilesView {
                             btn_c.set_sensitive(true);
                             gtk::glib::ControlFlow::Break
                         }
-                    }
-                });
+                    },
+                );
             });
         }
 
@@ -213,7 +218,11 @@ impl ProfilesView {
             import_btn.connect_clicked(move |btn| {
                 let name = nrow.text().to_string();
                 let url = urow.text().to_string();
-                let flag = if frow.selected() == 1 { "meta" } else { "aerion" };
+                let flag = if frow.selected() == 1 {
+                    "meta"
+                } else {
+                    "aerion"
+                };
                 if url.trim().is_empty() {
                     return;
                 }
@@ -232,8 +241,9 @@ impl ProfilesView {
                 let urow_c = urow.clone();
                 let slbl_c = slbl.clone();
                 let st_c = st.clone();
-                gtk::glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
-                    match rx.try_recv() {
+                gtk::glib::timeout_add_local(
+                    std::time::Duration::from_millis(120),
+                    move || match rx.try_recv() {
                         Ok(Ok(_)) => {
                             btn_c.set_sensitive(true);
                             nrow_c.set_text("");
@@ -256,8 +266,8 @@ impl ProfilesView {
                             btn_c.set_sensitive(true);
                             gtk::glib::ControlFlow::Break
                         }
-                    }
-                });
+                    },
+                );
             });
         }
 
@@ -288,8 +298,9 @@ impl ProfilesView {
                 let buf_c = buf.clone();
                 let slbl_c = slbl.clone();
                 let st_c = st.clone();
-                gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-                    match rx.try_recv() {
+                gtk::glib::timeout_add_local(
+                    std::time::Duration::from_millis(100),
+                    move || match rx.try_recv() {
                         Ok(Ok(_)) => {
                             buf_c.set_text("");
                             slbl_c.set_visible(false);
@@ -306,8 +317,8 @@ impl ProfilesView {
                             gtk::glib::ControlFlow::Continue
                         }
                         Err(_) => gtk::glib::ControlFlow::Break,
-                    }
-                });
+                    },
+                );
             });
         }
 
@@ -374,13 +385,20 @@ impl ProfilesView {
                 String::new()
             };
             let fmt_tag = if !prof.url.is_empty() {
-                if prof.flag.eq_ignore_ascii_case("meta") { "Meta · " } else { "Aerion · " }
+                if prof.flag.eq_ignore_ascii_case("meta") {
+                    "Meta · "
+                } else {
+                    "Aerion · "
+                }
             } else {
                 ""
             };
             let row = adw::ActionRow::builder()
                 .title(&prof.name)
-                .subtitle(&format!("{fmt_tag}{} 节点 · {} 规则{quota}", prof.node_count, prof.rule_count))
+                .subtitle(&format!(
+                    "{fmt_tag}{} 节点 · {} 规则{quota}",
+                    prof.node_count, prof.rule_count
+                ))
                 .activatable(true)
                 .build();
             if prof.active {

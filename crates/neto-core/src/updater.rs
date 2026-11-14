@@ -424,9 +424,7 @@ pub async fn download_release_asset(
         .context("创建临时安装包文件失败")?;
     let mut total_bytes = 0u64;
     while let Some(chunk) = resp.chunk().await.context("读取更新安装包数据失败")? {
-        file.write_all(&chunk)
-            .await
-            .context("写入更新安装包失败")?;
+        file.write_all(&chunk).await.context("写入更新安装包失败")?;
         total_bytes = total_bytes.saturating_add(chunk.len() as u64);
     }
     file.flush().await?;
@@ -455,7 +453,10 @@ mod tests {
 
     #[test]
     fn test_normalize_repo_slug() {
-        assert_eq!(normalize_repo_slug("MoeclubM/Neto").unwrap(), "MoeclubM/Neto");
+        assert_eq!(
+            normalize_repo_slug("MoeclubM/Neto").unwrap(),
+            "MoeclubM/Neto"
+        );
         assert_eq!(
             normalize_repo_slug("https://github.com/MoeclubM/XBClient.git").unwrap(),
             "MoeclubM/XBClient"
@@ -502,8 +503,7 @@ mod tests {
         assert_eq!(inst, "https://example.com/setup.exe");
         assert_eq!(arch_url, "https://example.com/win.zip");
 
-        let (dl_port, _, _, _, _, _) =
-            select_platform_assets(&assets, "windows", "x86_64", false);
+        let (dl_port, _, _, _, _, _) = select_platform_assets(&assets, "windows", "x86_64", false);
         assert_eq!(dl_port, "https://example.com/win.zip");
 
         let (deb, _, _, _, _, _) = select_platform_assets(&assets, "linux", "x86_64", true);

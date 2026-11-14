@@ -35,7 +35,11 @@ pub struct SettingsView {
     initialized: Cell<bool>,
 }
 
-fn build_subpage_shell(title: &str, stack: &gtk::Stack, content: &impl IsA<gtk::Widget>) -> gtk::Box {
+fn build_subpage_shell(
+    title: &str,
+    stack: &gtk::Stack,
+    content: &impl IsA<gtk::Widget>,
+) -> gtk::Box {
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let top_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     top_bar.set_margin_top(10);
@@ -128,7 +132,9 @@ impl SettingsView {
         stack.add_named(&main_page, Some("root"));
 
         let dns_page = adw::PreferencesPage::new();
-        let tun_group = adw::PreferencesGroup::builder().title("TUN 与协议栈").build();
+        let tun_group = adw::PreferencesGroup::builder()
+            .title("TUN 与协议栈")
+            .build();
         let ipv6_row = adw::SwitchRow::builder().title("启用 IPv6").build();
         let mtu_row = adw::EntryRow::builder()
             .title("TUN MTU")
@@ -260,7 +266,12 @@ impl SettingsView {
                 }
             });
         }
-        for (btn, key) in [(&b_all, "all"), (&b_info, "info"), (&b_warn, "warn"), (&b_err, "error")] {
+        for (btn, key) in [
+            (&b_all, "all"),
+            (&b_info, "info"),
+            (&b_warn, "warn"),
+            (&b_err, "error"),
+        ] {
             let lvl = log_level.clone();
             btn.connect_toggled(move |b| {
                 if b.is_active() {
@@ -371,8 +382,9 @@ impl SettingsView {
                 let btn_c = btn_ref.clone();
                 let url_c = url_ref.clone();
                 let ver_c = ver_ref.clone();
-                gtk::glib::timeout_add_local(std::time::Duration::from_millis(80), move || {
-                    match rx.try_recv() {
+                gtk::glib::timeout_add_local(
+                    std::time::Duration::from_millis(80),
+                    move || match rx.try_recv() {
                         Ok(Ok(val)) => {
                             btn_c.set_sensitive(true);
                             let has_upd = val
@@ -417,8 +429,8 @@ impl SettingsView {
                             btn_c.set_label("检查更新");
                             gtk::glib::ControlFlow::Break
                         }
-                    }
-                });
+                    },
+                );
             });
         }
 
@@ -487,7 +499,11 @@ impl SettingsView {
             self.bypass_row.set_text(&snap.settings.system_proxy_bypass);
             self.initialized.set(true);
         }
-        let ipv6_lbl = if snap.settings.ipv6_enabled { "IPv6 开" } else { "IPv6 关" };
+        let ipv6_lbl = if snap.settings.ipv6_enabled {
+            "IPv6 开"
+        } else {
+            "IPv6 关"
+        };
         self.dns_entry_row
             .set_subtitle(&format!("MTU {} · {ipv6_lbl}", snap.settings.mtu));
 

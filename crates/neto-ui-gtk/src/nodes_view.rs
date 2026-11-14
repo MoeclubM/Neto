@@ -117,9 +117,13 @@ impl NodesView {
     }
 
     pub fn apply_snapshot(&self, snap: &EngineSnapshot) {
-        self.test_all_btn.set_sensitive(!snap.nodes_testing && !snap.nodes.is_empty());
         self.test_all_btn
-            .set_label(if snap.nodes_testing { "测速中" } else { "测速" });
+            .set_sensitive(!snap.nodes_testing && !snap.nodes.is_empty());
+        self.test_all_btn.set_label(if snap.nodes_testing {
+            "测速中"
+        } else {
+            "测速"
+        });
 
         let filter = self.filter_text.borrow().clone();
         let sig = format!(
@@ -135,7 +139,12 @@ impl NodesView {
                 .join(","),
             snap.nodes
                 .iter()
-                .map(|n| format!("{}:{:?}:{:?}", n.index, n.latency_ms, n.last_error.is_some()))
+                .map(|n| format!(
+                    "{}:{:?}:{:?}",
+                    n.index,
+                    n.latency_ms,
+                    n.last_error.is_some()
+                ))
                 .collect::<Vec<_>>()
                 .join(",")
         );

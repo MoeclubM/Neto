@@ -83,7 +83,10 @@ mod imp {
                     class,
                     jni_str!("onLog"),
                     jni_sig!("(Ljava/lang/String;Ljava/lang/String;)V"),
-                    &[JValue::Object(jlevel.as_ref()), JValue::Object(jmsg.as_ref())],
+                    &[
+                        JValue::Object(jlevel.as_ref()),
+                        JValue::Object(jmsg.as_ref()),
+                    ],
                 )?;
                 Ok(())
             })

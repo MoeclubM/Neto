@@ -16,8 +16,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex as StdMutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
@@ -270,8 +270,13 @@ fn apply_resolved_routing(
     let snapshot = config.clone();
     for rule in &mut config.rules {
         let (prefix, action, suffix) = split_rule_action(rule)?;
-        let target =
-            resolve_rule_target(action, group_targets, &snapshot, resolved_nodes, selected_proxy);
+        let target = resolve_rule_target(
+            action,
+            group_targets,
+            &snapshot,
+            resolved_nodes,
+            selected_proxy,
+        );
         if target == "PASS" {
             continue;
         }
@@ -698,14 +703,8 @@ rules:
         let mut gt = BTreeMap::new();
         gt.insert("代理选择".to_string(), "自动选择".to_string());
         gt.insert("自动选择".to_string(), "NodeB".to_string());
-        let (_, _, routes_grouped) = compile_route_config(
-            yaml,
-            None,
-            None,
-            Some("NodeA"),
-            &gt,
-            &BTreeMap::new(),
-        )?;
+        let (_, _, routes_grouped) =
+            compile_route_config(yaml, None, None, Some("NodeA"), &gt, &BTreeMap::new())?;
         let decision2 = routes_grouped.try_decide(
             &ProxyTarget::Domain("www.google.com".to_string(), 443),
             RouteNetwork::Tcp,

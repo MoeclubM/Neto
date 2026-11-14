@@ -30,7 +30,9 @@ pub use profile::{
     NodeSummary, ParsedProfilePayload, ProfileRecord, ProxyGroupSummary, SubscriptionUserInfo,
     build_profile_from_raw_nodes, fetch_and_parse_subscription, parse_yaml_profile,
 };
-pub use route::{inspect_route_config_yaml, start_route_from_json, stop_route, test_route_from_json};
+pub use route::{
+    inspect_route_config_yaml, start_route_from_json, stop_route, test_route_from_json,
+};
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 pub use runtime::shutdown_vpns;
 pub use runtime::{

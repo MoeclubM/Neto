@@ -210,7 +210,11 @@ impl ConnectionsView {
             format!("已关闭 ({})", snap.closed.len())
         });
 
-        let source = if is_closed { &snap.closed } else { &snap.active };
+        let source = if is_closed {
+            &snap.closed
+        } else {
+            &snap.active
+        };
         self.action_all_btn.set_sensitive(!source.is_empty());
         self.summary_label.set_text(&if is_closed {
             format!(

@@ -2,13 +2,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_yaml::{Mapping, Value};
 use std::collections::BTreeSet;
 
-const ROUTE_KEYS: &[&str] = &[
-    "proxies",
-    "proxy-groups",
-    "proxy_groups",
-    "rules",
-    "ipv6",
-];
+const ROUTE_KEYS: &[&str] = &["proxies", "proxy-groups", "proxy_groups", "rules", "ipv6"];
 
 pub fn sanitize_mihomo_route_yaml(text: &str) -> Result<String> {
     let root: Value = serde_yaml::from_str(text).context("parse mihomo route YAML")?;
@@ -102,11 +96,8 @@ fn rewrite_stripped_rule_sets(rules: &[Value], stripped: &BTreeSet<String>) -> V
         })
     });
     let mut has_geoip_cn = rules.iter().any(|item| {
-        mapping_key(item).is_some_and(|rule| {
-            rule.trim()
-                .to_ascii_uppercase()
-                .starts_with("GEOIP,CN,")
-        })
+        mapping_key(item)
+            .is_some_and(|rule| rule.trim().to_ascii_uppercase().starts_with("GEOIP,CN,"))
     });
     let mut cleaned = Vec::with_capacity(rules.len());
     for item in rules {

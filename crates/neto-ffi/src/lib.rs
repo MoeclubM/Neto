@@ -13,8 +13,7 @@ pub static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
     Runtime::new().expect("create Neto Tokio runtime")
 });
 
-static GLOBAL_CONTROLLER: Lazy<Mutex<Option<Arc<NetoController>>>> =
-    Lazy::new(|| Mutex::new(None));
+static GLOBAL_CONTROLLER: Lazy<Mutex<Option<Arc<NetoController>>>> = Lazy::new(|| Mutex::new(None));
 
 pub fn global_controller() -> Result<Arc<NetoController>> {
     GLOBAL_CONTROLLER
@@ -181,9 +180,9 @@ fn panic_text(payload: Box<dyn Any + Send + 'static>) -> String {
 #[cfg(target_os = "android")]
 mod android_jni {
     use super::*;
+    use jni::EnvUnowned;
     use jni::errors::{Result as JniResult, ThrowRuntimeExAndDefault};
     use jni::objects::{JClass, JObject, JString};
-    use jni::EnvUnowned;
 
     #[unsafe(no_mangle)]
     pub extern "system" fn Java_moe_telecom_neto_sdk_NetoBridge_nativeInit<'local>(

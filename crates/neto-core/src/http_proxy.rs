@@ -27,7 +27,9 @@ impl HttpProxyBridge {
         let listener = TcpListener::bind(SocketAddr::new(bind_ip, listen_port))
             .await
             .with_context(|| format!("bind local HTTP proxy on {bind_ip}:{listen_port}"))?;
-        let local_addr = listener.local_addr().context("read HTTP proxy local_addr")?;
+        let local_addr = listener
+            .local_addr()
+            .context("read HTTP proxy local_addr")?;
         let upstream = Arc::new(RwLock::new(upstream_socks));
         let upstream_clone = upstream.clone();
         let accept_task = tokio::spawn(async move {
@@ -98,7 +100,8 @@ async fn handle_http_client(mut client: TcpStream, socks_addr: SocketAddr) -> Re
         buf.extend_from_slice(&temp[..n]);
     };
 
-    let header_text = std::str::from_utf8(&buf[..header_end]).context("HTTP header is not UTF-8")?;
+    let header_text =
+        std::str::from_utf8(&buf[..header_end]).context("HTTP header is not UTF-8")?;
     let mut lines = header_text.split("\r\n");
     let request_line = lines.next().context("missing HTTP request line")?;
     let mut parts = request_line.split_whitespace();

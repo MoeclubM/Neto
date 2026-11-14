@@ -54,11 +54,22 @@ mod imp {
         ) -> Result<()> {
             let mut applied = false;
             if has_binary("gsettings") {
-                let _ = run_cmd("gsettings", &["set", "org.gnome.system.proxy", "mode", "manual"]);
-                let _ = run_cmd("gsettings", &["set", "org.gnome.system.proxy.http", "host", host]);
                 let _ = run_cmd(
                     "gsettings",
-                    &["set", "org.gnome.system.proxy.http", "port", &http_port.to_string()],
+                    &["set", "org.gnome.system.proxy", "mode", "manual"],
+                );
+                let _ = run_cmd(
+                    "gsettings",
+                    &["set", "org.gnome.system.proxy.http", "host", host],
+                );
+                let _ = run_cmd(
+                    "gsettings",
+                    &[
+                        "set",
+                        "org.gnome.system.proxy.http",
+                        "port",
+                        &http_port.to_string(),
+                    ],
                 );
                 let _ = run_cmd(
                     "gsettings",
@@ -66,7 +77,12 @@ mod imp {
                 );
                 let _ = run_cmd(
                     "gsettings",
-                    &["set", "org.gnome.system.proxy.https", "port", &http_port.to_string()],
+                    &[
+                        "set",
+                        "org.gnome.system.proxy.https",
+                        "port",
+                        &http_port.to_string(),
+                    ],
                 );
                 let _ = run_cmd(
                     "gsettings",
@@ -89,19 +105,51 @@ mod imp {
                     let socks_url = format!("socks://{host}:{socks_port}");
                     let _ = run_cmd(
                         kwrite,
-                        &["--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "1"],
+                        &[
+                            "--file",
+                            "kioslaverc",
+                            "--group",
+                            "Proxy Settings",
+                            "--key",
+                            "ProxyType",
+                            "1",
+                        ],
                     );
                     let _ = run_cmd(
                         kwrite,
-                        &["--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpProxy", &http_url],
+                        &[
+                            "--file",
+                            "kioslaverc",
+                            "--group",
+                            "Proxy Settings",
+                            "--key",
+                            "httpProxy",
+                            &http_url,
+                        ],
                     );
                     let _ = run_cmd(
                         kwrite,
-                        &["--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpsProxy", &http_url],
+                        &[
+                            "--file",
+                            "kioslaverc",
+                            "--group",
+                            "Proxy Settings",
+                            "--key",
+                            "httpsProxy",
+                            &http_url,
+                        ],
                     );
                     let _ = run_cmd(
                         kwrite,
-                        &["--file", "kioslaverc", "--group", "Proxy Settings", "--key", "socksProxy", &socks_url],
+                        &[
+                            "--file",
+                            "kioslaverc",
+                            "--group",
+                            "Proxy Settings",
+                            "--key",
+                            "socksProxy",
+                            &socks_url,
+                        ],
                     );
                     notify_kio_reload();
                     applied = true;
@@ -109,20 +157,33 @@ mod imp {
                 }
             }
             if !applied {
-                log::warn!("neither gsettings nor kwriteconfig found; system proxy kept at local port");
+                log::warn!(
+                    "neither gsettings nor kwriteconfig found; system proxy kept at local port"
+                );
             }
             Ok(())
         }
 
         fn clear_system_proxy(&self) -> Result<()> {
             if has_binary("gsettings") {
-                let _ = run_cmd("gsettings", &["set", "org.gnome.system.proxy", "mode", "none"]);
+                let _ = run_cmd(
+                    "gsettings",
+                    &["set", "org.gnome.system.proxy", "mode", "none"],
+                );
             }
             for kwrite in ["kwriteconfig6", "kwriteconfig5"] {
                 if has_binary(kwrite) {
                     let _ = run_cmd(
                         kwrite,
-                        &["--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "0"],
+                        &[
+                            "--file",
+                            "kioslaverc",
+                            "--group",
+                            "Proxy Settings",
+                            "--key",
+                            "ProxyType",
+                            "0",
+                        ],
                     );
                     notify_kio_reload();
                     break;
@@ -226,7 +287,11 @@ mod imp {
                 }
                 .into(),
                 StandardItem {
-                    label: if self.state.connected { "断开连接".into() } else { "立即连接".into() },
+                    label: if self.state.connected {
+                        "断开连接".into()
+                    } else {
+                        "立即连接".into()
+                    },
                     activate: Box::new(|this: &mut Self| {
                         let _ = this.tx.send(WaylandTrayAction::ToggleConnect);
                     }),
@@ -259,7 +324,9 @@ mod imp {
                             label: "规则".into(),
                             checked: self.state.routing_mode == RoutingMode::Rule,
                             activate: Box::new(|this: &mut Self| {
-                                let _ = this.tx.send(WaylandTrayAction::SetRoutingMode(RoutingMode::Rule));
+                                let _ = this
+                                    .tx
+                                    .send(WaylandTrayAction::SetRoutingMode(RoutingMode::Rule));
                             }),
                             ..Default::default()
                         }
@@ -268,7 +335,9 @@ mod imp {
                             label: "全局".into(),
                             checked: self.state.routing_mode == RoutingMode::Global,
                             activate: Box::new(|this: &mut Self| {
-                                let _ = this.tx.send(WaylandTrayAction::SetRoutingMode(RoutingMode::Global));
+                                let _ = this
+                                    .tx
+                                    .send(WaylandTrayAction::SetRoutingMode(RoutingMode::Global));
                             }),
                             ..Default::default()
                         }
@@ -277,7 +346,9 @@ mod imp {
                             label: "直连".into(),
                             checked: self.state.routing_mode == RoutingMode::Direct,
                             activate: Box::new(|this: &mut Self| {
-                                let _ = this.tx.send(WaylandTrayAction::SetRoutingMode(RoutingMode::Direct));
+                                let _ = this
+                                    .tx
+                                    .send(WaylandTrayAction::SetRoutingMode(RoutingMode::Direct));
                             }),
                             ..Default::default()
                         }

@@ -301,7 +301,9 @@ impl AsyncWrite for CountedStream<'_> {
             && *n > 0
         {
             let delta = *n as u64;
-            self.entry.download_bytes.fetch_add(delta, Ordering::Relaxed);
+            self.entry
+                .download_bytes
+                .fetch_add(delta, Ordering::Relaxed);
             SESSION_DOWNLOAD_BYTES.fetch_add(delta, Ordering::Relaxed);
         }
         poll
@@ -326,7 +328,11 @@ fn format_proxy_target(target: &ProxyTarget) -> String {
 async fn read_socks5_request(stream: &mut TcpStream) -> Result<(u8, ProxyTarget, Vec<u8>)> {
     let mut greet_hdr = [0u8; 2];
     stream.read_exact(&mut greet_hdr).await?;
-    ensure!(greet_hdr[0] == 0x05, "invalid SOCKS5 version {}", greet_hdr[0]);
+    ensure!(
+        greet_hdr[0] == 0x05,
+        "invalid SOCKS5 version {}",
+        greet_hdr[0]
+    );
     let mut methods = vec![0u8; greet_hdr[1] as usize];
     stream.read_exact(&mut methods).await?;
     stream.write_all(&[0x05, 0x00]).await?;
@@ -502,7 +508,10 @@ async fn handle_tracked_socks_client(
             upstream_ctrl.write_all(&[0x05, 0x01, 0x00]).await?;
             let mut up_greet = [0u8; 2];
             upstream_ctrl.read_exact(&mut up_greet).await?;
-            ensure!(up_greet == [0x05, 0x00], "inner SOCKS5 UDP greeting rejected");
+            ensure!(
+                up_greet == [0x05, 0x00],
+                "inner SOCKS5 UDP greeting rejected"
+            );
             upstream_ctrl
                 .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                 .await?;

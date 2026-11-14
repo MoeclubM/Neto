@@ -6,8 +6,7 @@ use crate::profile::ProfileRecord;
 use crate::telemetry::TelemetrySnapshot;
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_SYSTEM_PROXY_BYPASS: &str =
-    "<local>;localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.2*;172.30.*;172.31.*;192.168.*;[::1]";
+pub const DEFAULT_SYSTEM_PROXY_BYPASS: &str = "<local>;localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.2*;172.30.*;172.31.*;192.168.*;[::1]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]

@@ -466,7 +466,8 @@ impl HomeView {
             self.toggle_button.set_label("连接中");
             self.toggle_button.set_sensitive(false);
             self.session_badge.set_visible(false);
-            self.endpoint_label.set_text(&format!("预设端口 {}", snap.settings.mixed_port));
+            self.endpoint_label
+                .set_text(&format!("预设端口 {}", snap.settings.mixed_port));
         } else if snap.connection.connected {
             self.status_label.set_text("已连接");
             self.toggle_button.set_label("断开");
@@ -501,7 +502,8 @@ impl HomeView {
             self.status_dot.add_css_class("neto-dot-idle");
             self.session_badge.set_visible(false);
             self.duration_label.set_text("00:00:00");
-            self.endpoint_label.set_text(&format!("预设端口 {}", snap.settings.mixed_port));
+            self.endpoint_label
+                .set_text(&format!("预设端口 {}", snap.settings.mixed_port));
         }
 
         let selected_node = snap
@@ -693,7 +695,10 @@ impl HomeView {
                             (t_str, s_str)
                         }
                     };
-                    let row = adw::ActionRow::builder().title(&title).subtitle(&sub).build();
+                    let row = adw::ActionRow::builder()
+                        .title(&title)
+                        .subtitle(&sub)
+                        .build();
                     row.set_use_markup(false);
                     group.add(&row);
                     self.cards_box.append(&group);

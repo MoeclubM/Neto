@@ -135,7 +135,12 @@ async fn https_get_small_body(
 pub async fn run_network_check(socks_addr: Option<SocketAddr>) -> Result<NetworkCheckResult> {
     let connector = build_tls_connector()?;
     let (cf_trace, ip_sb, baidu_ms, cf_ms, google_ms, github_ms) = tokio::join!(
-        https_get_small_body(socks_addr, "www.cloudflare.com", "/cdn-cgi/trace", &connector),
+        https_get_small_body(
+            socks_addr,
+            "www.cloudflare.com",
+            "/cdn-cgi/trace",
+            &connector
+        ),
         https_get_small_body(socks_addr, "api.ip.sb", "/geoip", &connector),
         probe_https_head(socks_addr, "www.baidu.com", "/", &connector),
         probe_https_head(socks_addr, "cp.cloudflare.com", "/generate_204", &connector),
@@ -261,11 +266,7 @@ pub fn parse_rule_items(yaml: &str, filter: &str, limit: usize) -> Result<(usize
         let parts: Vec<&str> = raw.split(',').map(str::trim).collect();
         let (rule_type, payload, target) = match parts.as_slice() {
             [kind, act] => ((*kind).to_string(), "*".to_string(), (*act).to_string()),
-            [kind, pay, act, ..] => (
-                (*kind).to_string(),
-                (*pay).to_string(),
-                (*act).to_string(),
-            ),
+            [kind, pay, act, ..] => ((*kind).to_string(), (*pay).to_string(), (*act).to_string()),
             _ => ("RULE".to_string(), raw.clone(), String::new()),
         };
         items.push(RuleItem {
@@ -313,9 +314,7 @@ pub fn prepend_custom_route_rule(
     let entry = map
         .entry(rules_key)
         .or_insert_with(|| serde_yaml::Value::Sequence(Vec::new()));
-    let seq = entry
-        .as_sequence_mut()
-        .context("rules 字段必须是列表")?;
+    let seq = entry.as_sequence_mut().context("rules 字段必须是列表")?;
     seq.insert(0, serde_yaml::Value::String(rule.to_string()));
     let encoded = serde_yaml::to_string(&root)?;
     validate_custom_route_yaml(&encoded)?;

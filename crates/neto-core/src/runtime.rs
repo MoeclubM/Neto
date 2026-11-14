@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::{Arc, Mutex as StdMutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -271,12 +271,22 @@ pub(crate) async fn start_aerion_socks(
     let bypass_cidrs = proxy_tun_bypass_cidrs(&config, !cfg!(target_os = "windows"));
     let core = if track_traffic {
         match &config {
-            AerionProxyConfig::AnyTls(c) => Some(aerion::ProxyCore::from_credentials(&c.password, &[])),
+            AerionProxyConfig::AnyTls(c) => {
+                Some(aerion::ProxyCore::from_credentials(&c.password, &[]))
+            }
             AerionProxyConfig::Flux(c) => Some(aerion::ProxyCore::from_credentials(&c.key, &[])),
-            AerionProxyConfig::Trojan(c) => Some(aerion::ProxyCore::from_credentials(&c.password, &[])),
-            AerionProxyConfig::Vless(c) => Some(aerion::ProxyCore::from_credentials(&c.user_id, &[])),
-            AerionProxyConfig::Vmess(c) => Some(aerion::ProxyCore::from_credentials(&c.user_id, &[])),
-            AerionProxyConfig::Hysteria2(c) => Some(aerion::ProxyCore::from_credentials(&c.password, &[])),
+            AerionProxyConfig::Trojan(c) => {
+                Some(aerion::ProxyCore::from_credentials(&c.password, &[]))
+            }
+            AerionProxyConfig::Vless(c) => {
+                Some(aerion::ProxyCore::from_credentials(&c.user_id, &[]))
+            }
+            AerionProxyConfig::Vmess(c) => {
+                Some(aerion::ProxyCore::from_credentials(&c.user_id, &[]))
+            }
+            AerionProxyConfig::Hysteria2(c) => {
+                Some(aerion::ProxyCore::from_credentials(&c.password, &[]))
+            }
             AerionProxyConfig::Mieru(c) => {
                 let cred = if c.username.is_empty() {
                     c.password.as_str()
@@ -290,7 +300,9 @@ pub(crate) async fn start_aerion_socks(
                 &format!("{}:{}", c.username, c.password),
                 &[],
             )),
-            AerionProxyConfig::Shadowsocks(c) => Some(aerion::ProxyCore::from_credentials(&c.password, &[])),
+            AerionProxyConfig::Shadowsocks(c) => {
+                Some(aerion::ProxyCore::from_credentials(&c.password, &[]))
+            }
             AerionProxyConfig::Tuic(c) => Some(aerion::ProxyCore::from_credentials(&c.uuid, &[])),
             AerionProxyConfig::Route(_) => Some(aerion::ProxyCore::from_credentials("direct", &[])),
             _ => None,
@@ -768,14 +780,16 @@ mod platform {
             None => {
                 let matcher = matcher_for_node(&request.node);
                 match start_aerion_socks(request.node, true).await {
-                    Ok((inner, task, core, cidrs)) => match spawn_tracked_socks_ingress(inner, matcher).await {
-                        Ok((tracked, itask)) => (tracked, vec![task], itask, core, cidrs),
-                        Err(error) => {
-                            task.abort();
-                            clear_outbound_if_idle();
-                            return Err(error);
+                    Ok((inner, task, core, cidrs)) => {
+                        match spawn_tracked_socks_ingress(inner, matcher).await {
+                            Ok((tracked, itask)) => (tracked, vec![task], itask, core, cidrs),
+                            Err(error) => {
+                                task.abort();
+                                clear_outbound_if_idle();
+                                return Err(error);
+                            }
                         }
-                    },
+                    }
                     Err(error) => {
                         clear_outbound_if_idle();
                         return Err(error);

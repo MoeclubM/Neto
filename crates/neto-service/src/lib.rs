@@ -152,8 +152,7 @@ mod imp {
                     let _ = svc.stop();
                     let _ = wait_for_state(&svc, ServiceState::Stopped, Duration::from_secs(10));
                 }
-                svc.change_config(&info)
-                    .context("更新 TUN 服务配置失败")?;
+                svc.change_config(&info).context("更新 TUN 服务配置失败")?;
                 svc
             }
             Err(err) if is_not_exist_error(&err) => manager
@@ -176,10 +175,9 @@ mod imp {
     fn stop_service(app_id: &str) -> Result<()> {
         let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
         let svc_name = service_name(app_id);
-        let service = match manager.open_service(
-            &svc_name,
-            ServiceAccess::QUERY_STATUS | ServiceAccess::STOP,
-        ) {
+        let service = match manager
+            .open_service(&svc_name, ServiceAccess::QUERY_STATUS | ServiceAccess::STOP)
+        {
             Ok(svc) => svc,
             Err(err) if is_not_exist_error(&err) => return Ok(()),
             Err(err) => return Err(err.into()),

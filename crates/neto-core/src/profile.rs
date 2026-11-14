@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-const SUBSCRIPTION_NODE_TYPES: &str =
-    "anytls,hysteria,trojan,vless,vmess,mieru,sudoku,flux,naive,shadowsocks,tuic,http,socks5,direct,block";
+const SUBSCRIPTION_NODE_TYPES: &str = "anytls,hysteria,trojan,vless,vmess,mieru,sudoku,flux,naive,shadowsocks,tuic,http,socks5,direct,block";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SubscriptionUserInfo {
@@ -188,7 +187,11 @@ pub fn normalize_raw_node(index: usize, mut raw: Value) -> Result<NodeSummary> {
         obj.insert("host".to_string(), Value::String(raw_server.clone()));
         obj.insert("server".to_string(), Value::String(raw_server.clone()));
     }
-    if !obj.get("insecure").and_then(Value::as_bool).unwrap_or(false) {
+    if !obj
+        .get("insecure")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         for key in ["skip-cert-verify", "skip_cert_verify", "allow_insecure"] {
             if let Some(Value::Bool(skip)) = obj.get(key) {
                 obj.insert("insecure".to_string(), Value::Bool(*skip));
@@ -274,7 +277,11 @@ pub fn normalize_raw_node(index: usize, mut raw: Value) -> Result<NodeSummary> {
         _ => {}
     }
     for key in ["tag", "label", "group"] {
-        if let Some(s) = obj.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+        if let Some(s) = obj
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             && !tags.iter().any(|t| t == s)
         {
             tags.push(s.to_string());
@@ -617,7 +624,9 @@ pub fn extract_proxy_groups_from_yaml(
     yaml_text: &str,
     nodes: &[NodeSummary],
 ) -> Vec<ProxyGroupSummary> {
-    let Ok(serde_yaml::Value::Mapping(root)) = serde_yaml::from_str::<serde_yaml::Value>(yaml_text.trim()) else {
+    let Ok(serde_yaml::Value::Mapping(root)) =
+        serde_yaml::from_str::<serde_yaml::Value>(yaml_text.trim())
+    else {
         return Vec::new();
     };
     let rules: Vec<String> = root
@@ -663,8 +672,7 @@ fn extract_proxy_groups_from_mapping(
                 let Some(name) = yaml_field_str(gm, "name") else {
                     continue;
                 };
-                let group_type =
-                    yaml_field_str(gm, "type").unwrap_or_else(|| "select".to_string());
+                let group_type = yaml_field_str(gm, "type").unwrap_or_else(|| "select".to_string());
                 let proxies = gm
                     .get(serde_yaml::Value::String("proxies".into()))
                     .and_then(serde_yaml::Value::as_sequence)
@@ -721,7 +729,11 @@ fn extract_proxy_groups_from_mapping(
             let had_no_valid_nodes = !cleaned.iter().any(|p| node_names.contains(p.as_str()));
             let wants_all_nodes = spec.include_all
                 || had_all_yaml_proxies
-                || (yaml_proxy_names.is_empty() && had_no_valid_nodes && cleaned.iter().all(|p| normalize_builtin_action(p).is_some()));
+                || (yaml_proxy_names.is_empty()
+                    && had_no_valid_nodes
+                    && cleaned
+                        .iter()
+                        .all(|p| normalize_builtin_action(p).is_some()));
             if wants_all_nodes {
                 let extra: Vec<String> = nodes
                     .iter()
@@ -861,8 +873,10 @@ pub fn reconcile_proxy_groups_with_nodes(
         .collect();
     let mut updated = Vec::with_capacity(existing_groups.len());
     for g in existing_groups {
-        let had_all_prev_nodes =
-            !prev_node_set.is_empty() && prev_node_set.iter().all(|pn| g.proxies.iter().any(|p| p == pn));
+        let had_all_prev_nodes = !prev_node_set.is_empty()
+            && prev_node_set
+                .iter()
+                .all(|pn| g.proxies.iter().any(|p| p == pn));
         let mut cleaned: Vec<String> = g
             .proxies
             .iter()
@@ -899,9 +913,9 @@ pub fn find_primary_select_group_index(
         for rule in rules.iter().rev() {
             if rule.trim_start().to_ascii_uppercase().starts_with("MATCH,")
                 && let Some(action) = extract_rule_action_name(rule)
-                && let Some(idx) = groups.iter().position(|g| {
-                    g.group_type.eq_ignore_ascii_case("select") && g.name == action
-                })
+                && let Some(idx) = groups
+                    .iter()
+                    .position(|g| g.group_type.eq_ignore_ascii_case("select") && g.name == action)
             {
                 return Some(idx);
             }
@@ -937,10 +951,7 @@ pub fn primary_select_group_index_from_yaml(
     find_primary_select_group_index(groups, rules.as_deref())
 }
 
-pub fn resolve_group_leaf_target(
-    group_name: &str,
-    groups: &[ProxyGroupSummary],
-) -> Option<String> {
+pub fn resolve_group_leaf_target(group_name: &str, groups: &[ProxyGroupSummary]) -> Option<String> {
     let mut cur = group_name.trim().to_string();
     let mut seen = BTreeSet::new();
     for _ in 0..16 {
@@ -976,7 +987,11 @@ async fn fetch_http_rule_provider(
         .header("User-Agent", "Aerion")
         .send()
         .await?;
-    ensure!(resp.status().is_success(), "HTTP {}", resp.status().as_u16());
+    ensure!(
+        resp.status().is_success(),
+        "HTTP {}",
+        resp.status().as_u16()
+    );
     let text = resp.text().await?;
     let fmt = if format.is_empty() { "yaml" } else { format };
     match fmt {
@@ -1095,10 +1110,7 @@ fn yaml_to_json(val: serde_yaml::Value) -> Result<Value> {
     }
 }
 
-pub fn merge_preserved_latencies(
-    previous: &[NodeSummary],
-    next: &mut [NodeSummary],
-) {
+pub fn merge_preserved_latencies(previous: &[NodeSummary], next: &mut [NodeSummary]) {
     let mut by_key: BTreeMap<(String, String, u16), Option<u64>> = BTreeMap::new();
     for node in previous {
         if node.latency_ms.is_some() {
@@ -1136,12 +1148,7 @@ pub fn recompute_proxy_groups(nodes: &[NodeSummary], groups: &mut [ProxyGroupSum
                     .min_by_key(|(ms, _)| *ms)
                     .map(|(_, name)| name);
                 let chosen = fastest
-                    .or_else(|| {
-                        group
-                            .selected
-                            .clone()
-                            .filter(|s| group.proxies.contains(s))
-                    })
+                    .or_else(|| group.selected.clone().filter(|s| group.proxies.contains(s)))
                     .or_else(|| group.proxies.first().cloned());
                 group.now = chosen.clone();
                 group.selected = chosen;
@@ -1291,13 +1298,8 @@ rules:
   - GEOIP,CN,DIRECT,no-resolve
   - MATCH,代理选择
 "#;
-        let payload = build_profile_from_raw_nodes(
-            raw_nodes,
-            Some(yaml.to_string()),
-            vec![],
-            2,
-            None,
-        );
+        let payload =
+            build_profile_from_raw_nodes(raw_nodes, Some(yaml.to_string()), vec![], 2, None);
         assert_eq!(payload.nodes.len(), 2);
         assert_eq!(payload.proxy_groups.len(), 2);
         assert_eq!(

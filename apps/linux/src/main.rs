@@ -58,11 +58,7 @@ fn main() -> anyhow::Result<()> {
             stack_for_profiles.set_visible_child_name("profiles");
         });
 
-        let home_view = HomeView::new(
-            ctrl_activate.clone(),
-            handle_activate.clone(),
-            open_nodes,
-        );
+        let home_view = HomeView::new(ctrl_activate.clone(), handle_activate.clone(), open_nodes);
         home_view.set_on_open_connections(open_connections);
         home_view.set_on_open_profiles(open_profiles);
         let nodes_view = NodesView::new(ctrl_activate.clone(), handle_activate.clone());
@@ -75,12 +71,7 @@ fn main() -> anyhow::Result<()> {
             option_env!("NETO_APP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
         );
 
-        stack.add_titled_with_icon(
-            &home_view.root,
-            Some("home"),
-            "主页",
-            "go-home-symbolic",
-        );
+        stack.add_titled_with_icon(&home_view.root, Some("home"), "主页", "go-home-symbolic");
         stack.add_titled_with_icon(
             &nodes_view.root,
             Some("nodes"),

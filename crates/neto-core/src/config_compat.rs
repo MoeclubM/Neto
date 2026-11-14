@@ -188,33 +188,6 @@ fn flux_config(node: &Value, listen: SocketAddr) -> Result<FluxClientConfig> {
 
     let tls = tls_object_field(&merged)?;
     let _ = tls_bool(&merged, tls, &["enabled"], true)?;
-    let default_reality = reality_config(&merged, tls)?;
-    let default_obfs_key = node_optional_string(
-        &merged,
-        &[
-            "obfs_key",
-            "obfs-key",
-            "obfs_password",
-            "obfs-password",
-            "obfsKey",
-        ],
-    )
-    .filter(|v| !v.is_empty());
-    let explicit_security = match node_optional_string(
-        &merged,
-        &["security", "default_security", "defaultSecurity"],
-    )
-        .filter(|v| !v.is_empty())
-        .as_deref()
-    {
-        Some(mode) => Some(match mode.to_ascii_lowercase().as_str() {
-            "reality" => FluxSecurityMode::Reality,
-            "tls" => FluxSecurityMode::Tls,
-            "obfs" | "salamander" => FluxSecurityMode::Obfs,
-            other => bail!("unsupported Flux security mode: {other}"),
-        }),
-        None => None,
-    };
     let default_sni = node_sni(&merged, tls, &server_host);
     let default_fingerprint = client_fingerprint(&merged, tls)?;
     let default_insecure = tls_bool(&merged, tls, INSECURE_KEYS, false)?;
@@ -238,7 +211,6 @@ fn flux_config(node: &Value, listen: SocketAddr) -> Result<FluxClientConfig> {
         port: server_port,
         key,
         udp,
-        security: explicit_security,
         servername: Some(default_sni),
         client_fingerprint: default_fingerprint,
         skip_cert_verify: default_insecure,
@@ -247,18 +219,6 @@ fn flux_config(node: &Value, listen: SocketAddr) -> Result<FluxClientConfig> {
         } else {
             Some(serde_json::from_value(serde_json::json!(default_alpn))?)
         },
-        reality_opts: None,
-        public_key: default_reality.as_ref().map(|r| {
-            use base64::Engine;
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r.public_key)
-        }),
-        short_id: default_reality.as_ref().map(|r| {
-            r.short_id
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
-        }),
-        obfs_key: default_obfs_key,
         resolved_v4,
         resolved_v6,
         channels: wire_channels,
@@ -422,7 +382,8 @@ fn vless_config(node: &Value, listen: SocketAddr) -> Result<VlessClientConfig> {
         disable_system_roots: tls_disable_system_roots(tls)?,
         pinned_cert_sha256: tls_pinned_cert_sha256(tls)?,
         flow: node_optional_string(node, &["flow"]).unwrap_or_default(),
-        packet_encoding: node_optional_string(node, &["packet_encoding", "packet-encoding"]).unwrap_or_default(),
+        packet_encoding: node_optional_string(node, &["packet_encoding", "packet-encoding"])
+            .unwrap_or_default(),
         mux: mux_enabled(node)?,
         udp: node_bool(node, &["udp"], true)?,
         client_fingerprint,
@@ -550,8 +511,12 @@ fn naive_config(node: &Value, listen: SocketAddr) -> Result<NaiveClientConfig> {
                     )
                 })
                 .unwrap_or(false),
-        quic_congestion_control: node_optional_string(node, &["quic_congestion_control", "quic-congestion-control"]).filter(|v| !v.is_empty())
-            .unwrap_or_else(aerion::naive::default_naive_quic_congestion_control),
+        quic_congestion_control: node_optional_string(
+            node,
+            &["quic_congestion_control", "quic-congestion-control"],
+        )
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(aerion::naive::default_naive_quic_congestion_control),
     })
 }
 
@@ -773,7 +738,12 @@ fn vless_transport(node: &Value) -> Result<VlessTransportConfig> {
     if network.eq_ignore_ascii_case("xhttp") || network.eq_ignore_ascii_case("splithttp") {
         let opts = object_field(
             node,
-            &["xhttp_opts", "xhttp-opts", "splithttp_opts", "splithttp-opts"],
+            &[
+                "xhttp_opts",
+                "xhttp-opts",
+                "splithttp_opts",
+                "splithttp-opts",
+            ],
         )?;
         let path = match opts {
             Some(o) => map_first_string(o, &["path"])?,
@@ -904,8 +874,7 @@ fn field<'a>(node: &'a Value, keys: &[&str]) -> Option<&'a Value> {
 }
 
 fn has_non_empty_field(node: &Value, keys: &[&str]) -> bool {
-    field(node, keys)
-        .is_some_and(|v| !v.is_null() && value_to_string(v).as_deref() != Some(""))
+    field(node, keys).is_some_and(|v| !v.is_null() && value_to_string(v).as_deref() != Some(""))
 }
 
 fn tls_object_field(node: &Value) -> Result<Option<&Map<String, Value>>> {
@@ -1894,7 +1863,6 @@ mod tests {
 
     #[test]
     fn parses_flux_default_and_manual_multi_channel_nodes() -> Result<()> {
-        let pub_key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
         let auto_node = serde_json::json!({
             "type": "flux",
             "name": "Flux-Auto",
@@ -1903,10 +1871,6 @@ mod tests {
             "uuid": "a3482e88-686a-4a58-8126-99c9df64b7bf",
             "servername": "www.microsoft.com",
             "client-fingerprint": "chrome",
-            "reality-opts": {
-                "public-key": pub_key,
-                "short-id": "01020304"
-            },
             "resolved_v4": ["203.0.113.10"],
             "resolved_v6": ["2001:db8::10"]
         });
@@ -1915,11 +1879,17 @@ mod tests {
         else {
             bail!("expected Flux config")
         };
+        assert_eq!(
+            auto_cfg.options.ip_strategy,
+            aerion::FluxIpStrategy::Latency
+        );
         assert_eq!(auto_cfg.channels.len(), 2);
         assert_eq!(auto_cfg.channels[0].transport, FluxTransportKind::Tcp);
         assert_eq!(auto_cfg.channels[0].ip_version, "ipv4");
+        assert_eq!(auto_cfg.channels[0].security, FluxSecurityMode::Tls);
         assert_eq!(auto_cfg.channels[1].transport, FluxTransportKind::Tcp);
         assert_eq!(auto_cfg.channels[1].ip_version, "ipv6");
+        assert_eq!(auto_cfg.channels[1].security, FluxSecurityMode::Tls);
         assert_eq!(auto_cfg.channels[0].sni, "www.microsoft.com");
         assert_eq!(auto_cfg.all_static_ips().len(), 2);
 
@@ -1935,12 +1905,11 @@ mod tests {
                 "standby_channels": 3,
                 "channels": [
                     {
-                        "id": "direct-reality",
+                        "id": "direct-obfs",
                         "connect_ports": "443",
                         "transport": "tcp",
-                        "public_key": pub_key,
-                        "short_id": "a1b2",
-                        "sni": "www.microsoft.com",
+                        "security": "obfs",
+                        "obfs_key": "flux-tcp-obfs-secret",
                         "resolved_v4": ["198.51.100.1"]
                     },
                     {
@@ -1970,25 +1939,38 @@ mod tests {
         else {
             bail!("expected Flux manual config")
         };
-        assert_eq!(manual_cfg.options.ip_strategy, aerion::FluxIpStrategy::Latency);
+        assert_eq!(
+            manual_cfg.options.ip_strategy,
+            aerion::FluxIpStrategy::Latency
+        );
         assert_eq!(manual_cfg.options.standby_channels, 3);
         assert_eq!(manual_cfg.channels.len(), 3);
-        assert_eq!(manual_cfg.channels[0].security, FluxSecurityMode::Reality);
+        assert_eq!(manual_cfg.channels[0].security, FluxSecurityMode::Obfs);
         assert_eq!(manual_cfg.channels[1].security, FluxSecurityMode::Tls);
         assert_eq!(manual_cfg.channels[1].http_path, "/flux-ws");
         assert_eq!(manual_cfg.channels[2].security, FluxSecurityMode::Obfs);
-        assert_eq!(manual_cfg.channels[2].role, aerion::FluxChannelRole::UdpRelay);
+        assert_eq!(
+            manual_cfg.channels[2].role,
+            aerion::FluxChannelRole::UdpRelay
+        );
         assert_eq!(manual_cfg.channels[2].ports, vec![21000, 21001, 21002]);
         assert_eq!(manual_cfg.all_static_ips().len(), 3);
+
+        let rejected_reality = serde_json::json!({
+            "type": "flux",
+            "host": "edge.example.com",
+            "port": 443,
+            "key": "user-uuid",
+            "channels": [{ "connect_ports": "443", "transport": "tcp", "security": "reality" }]
+        });
+        assert!(node_to_proxy_config(&rejected_reality, "127.0.0.1:1080".parse()?).is_err());
 
         let invalid_ports = serde_json::json!({
             "type": "flux",
             "host": "edge.example.com",
             "port": 443,
             "key": "user-uuid",
-            "security": "obfs",
-            "obfs_key": "flux-obfs-secret",
-            "channels": [{ "connect_ports": "10000-10100", "transport": "udp" }]
+            "channels": [{ "connect_ports": "10000-10100", "transport": "udp", "obfs_key": "flux-obfs-secret" }]
         });
         assert!(node_to_proxy_config(&invalid_ports, "127.0.0.1:1080".parse()?).is_err());
         Ok(())

@@ -4,9 +4,9 @@ mod imp {
     use neto_core::PlatformHooks;
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::process::CommandExt;
     use std::ptr::{null, null_mut};
     use std::sync::Arc;
-    use std::os::windows::process::CommandExt;
     use windows_sys::Win32::Foundation::{
         CloseHandle, ERROR_CANCELLED, ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SUCCESS, GetLastError,
         HANDLE, WAIT_OBJECT_0,
@@ -229,7 +229,10 @@ mod imp {
     }
 
     fn wide_null(s: &str) -> Vec<u16> {
-        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+        OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
 
     fn apply_wininet_proxy(server: &str, bypass: &str) -> Result<()> {
@@ -292,8 +295,13 @@ mod imp {
         unsafe {
             let backup_w = wide_null(backup_subkey);
             let mut existing: HKEY = null_mut();
-            if RegOpenKeyExW(HKEY_CURRENT_USER, backup_w.as_ptr(), 0, KEY_READ, &mut existing)
-                == ERROR_SUCCESS
+            if RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                backup_w.as_ptr(),
+                0,
+                KEY_READ,
+                &mut existing,
+            ) == ERROR_SUCCESS
             {
                 RegCloseKey(existing);
                 return Ok(());
@@ -332,8 +340,13 @@ mod imp {
 
             let conn_w = wide_null(&format!(r"{INTERNET_SETTINGS_KEY}\Connections"));
             let mut conn_key: HKEY = null_mut();
-            if RegOpenKeyExW(HKEY_CURRENT_USER, conn_w.as_ptr(), 0, KEY_READ, &mut conn_key)
-                == ERROR_SUCCESS
+            if RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                conn_w.as_ptr(),
+                0,
+                KEY_READ,
+                &mut conn_key,
+            ) == ERROR_SUCCESS
             {
                 for name in CONNECTION_VALUE_NAMES {
                     copy_reg_value(conn_key, name, backup_key, &format!("Connection.{name}"));
@@ -455,8 +468,13 @@ mod imp {
         unsafe {
             let run_w = wide_null(RUN_KEY);
             let mut key: HKEY = null_mut();
-            if RegOpenKeyExW(HKEY_CURRENT_USER, run_w.as_ptr(), 0, KEY_SET_VALUE, &mut key)
-                != ERROR_SUCCESS
+            if RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                run_w.as_ptr(),
+                0,
+                KEY_SET_VALUE,
+                &mut key,
+            ) != ERROR_SUCCESS
             {
                 bail!("open HKCU Run registry key failed");
             }

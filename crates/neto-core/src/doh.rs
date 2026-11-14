@@ -57,7 +57,9 @@ pub async fn resolve_node_host(
             return Ok(first);
         }
     }
-    Err(anyhow!("DoH returned no usable A/AAAA record for {trimmed}"))
+    Err(anyhow!(
+        "DoH returned no usable A/AAAA record for {trimmed}"
+    ))
 }
 
 fn normalize_flux_host(raw: &str) -> String {
@@ -290,7 +292,11 @@ pub async fn prepare_node_for_connect(
             if let Some(obj) = node.as_object_mut() {
                 let has_explicit_sni = ["sni", "servername", "server_name", "server-name"]
                     .iter()
-                    .any(|k| obj.get(*k).and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty()));
+                    .any(|k| {
+                        obj.get(*k)
+                            .and_then(Value::as_str)
+                            .is_some_and(|v| !v.trim().is_empty())
+                    });
                 if !has_explicit_sni {
                     obj.insert("servername".to_string(), Value::String(host.clone()));
                 }
