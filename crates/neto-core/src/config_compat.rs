@@ -200,25 +200,20 @@ fn flux_config(node: &Value, listen: SocketAddr) -> Result<FluxClientConfig> {
         ],
     )
     .filter(|v| !v.is_empty());
-    let default_security = match node_optional_string(&merged, &["security"])
+    let explicit_security = match node_optional_string(
+        &merged,
+        &["security", "default_security", "defaultSecurity"],
+    )
         .filter(|v| !v.is_empty())
         .as_deref()
     {
-        Some(mode) => match mode.to_ascii_lowercase().as_str() {
+        Some(mode) => Some(match mode.to_ascii_lowercase().as_str() {
             "reality" => FluxSecurityMode::Reality,
             "tls" => FluxSecurityMode::Tls,
             "obfs" | "salamander" => FluxSecurityMode::Obfs,
             other => bail!("unsupported Flux security mode: {other}"),
-        },
-        None => {
-            if default_reality.is_some() {
-                FluxSecurityMode::Reality
-            } else if default_obfs_key.is_some() {
-                FluxSecurityMode::Obfs
-            } else {
-                FluxSecurityMode::Tls
-            }
-        }
+        }),
+        None => None,
     };
     let default_sni = node_sni(&merged, tls, &server_host);
     let default_fingerprint = client_fingerprint(&merged, tls)?;
@@ -243,7 +238,7 @@ fn flux_config(node: &Value, listen: SocketAddr) -> Result<FluxClientConfig> {
         port: server_port,
         key,
         udp,
-        security: Some(default_security),
+        security: explicit_security,
         servername: Some(default_sni),
         client_fingerprint: default_fingerprint,
         skip_cert_verify: default_insecure,
@@ -1922,7 +1917,9 @@ mod tests {
         };
         assert_eq!(auto_cfg.channels.len(), 2);
         assert_eq!(auto_cfg.channels[0].transport, FluxTransportKind::Tcp);
-        assert_eq!(auto_cfg.channels[1].transport, FluxTransportKind::Udp);
+        assert_eq!(auto_cfg.channels[0].ip_version, "ipv4");
+        assert_eq!(auto_cfg.channels[1].transport, FluxTransportKind::Tcp);
+        assert_eq!(auto_cfg.channels[1].ip_version, "ipv6");
         assert_eq!(auto_cfg.channels[0].sni, "www.microsoft.com");
         assert_eq!(auto_cfg.all_static_ips().len(), 2);
 
@@ -1934,17 +1931,15 @@ mod tests {
             "key": "user-uuid",
             "client_supported": true,
             "flux": {
-                "ip_strategy": "dual",
+                "ip_strategy": "latency",
                 "standby_channels": 3,
-                "security": "reality",
-                "public_key": pub_key,
-                "short_id": "a1b2",
                 "channels": [
                     {
                         "id": "direct-reality",
                         "connect_ports": "443",
                         "transport": "tcp",
-                        "security": "reality",
+                        "public_key": pub_key,
+                        "short_id": "a1b2",
                         "sni": "www.microsoft.com",
                         "resolved_v4": ["198.51.100.1"]
                     },
@@ -1962,9 +1957,8 @@ mod tests {
                         "id": "udp-obfs",
                         "connect_ports": "21000-21002",
                         "transport": "udp",
-                        "security": "obfs",
                         "obfs_key": "flux-obfs-secret",
-                        "role": "backup",
+                        "role": "udp_relay",
                         "weight": 80,
                         "resolved_v4": ["198.51.100.9"]
                     }
@@ -1976,9 +1970,14 @@ mod tests {
         else {
             bail!("expected Flux manual config")
         };
+        assert_eq!(manual_cfg.options.ip_strategy, aerion::FluxIpStrategy::Latency);
         assert_eq!(manual_cfg.options.standby_channels, 3);
         assert_eq!(manual_cfg.channels.len(), 3);
+        assert_eq!(manual_cfg.channels[0].security, FluxSecurityMode::Reality);
+        assert_eq!(manual_cfg.channels[1].security, FluxSecurityMode::Tls);
         assert_eq!(manual_cfg.channels[1].http_path, "/flux-ws");
+        assert_eq!(manual_cfg.channels[2].security, FluxSecurityMode::Obfs);
+        assert_eq!(manual_cfg.channels[2].role, aerion::FluxChannelRole::UdpRelay);
         assert_eq!(manual_cfg.channels[2].ports, vec![21000, 21001, 21002]);
         assert_eq!(manual_cfg.all_static_ips().len(), 3);
 

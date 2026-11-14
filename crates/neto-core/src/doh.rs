@@ -176,21 +176,27 @@ pub async fn resolve_flux_node(
         }
     }
     let resolver = dns_url.trim().to_string();
+    let use_doh = !resolver.is_empty();
     ensure!(
-        domains.is_empty() || resolver.starts_with("https://") || resolver.starts_with("http://"),
+        !use_doh
+            || domains.is_empty()
+            || resolver.starts_with("https://")
+            || resolver.starts_with("http://"),
         "Flux DNS must be an HTTP/HTTPS DoH URL"
     );
     let mut tasks = JoinSet::new();
-    for domain in domains {
-        let resolver = resolver.clone();
-        let ua = user_agent.map(str::to_string);
-        tasks.spawn(async move {
-            let (a, aaaa) = tokio::join!(
-                query_doh_family(&resolver, &domain, "A", ua.as_deref()),
-                query_doh_family(&resolver, &domain, "AAAA", ua.as_deref()),
-            );
-            (domain, a.unwrap_or_default(), aaaa.unwrap_or_default())
-        });
+    if use_doh {
+        for domain in domains {
+            let resolver = resolver.clone();
+            let ua = user_agent.map(str::to_string);
+            tasks.spawn(async move {
+                let (a, aaaa) = tokio::join!(
+                    query_doh_family(&resolver, &domain, "A", ua.as_deref()),
+                    query_doh_family(&resolver, &domain, "AAAA", ua.as_deref()),
+                );
+                (domain, a.unwrap_or_default(), aaaa.unwrap_or_default())
+            });
+        }
     }
     let mut resolved = HashMap::new();
     while let Some(result) = tasks.join_next().await {
@@ -216,13 +222,27 @@ pub async fn resolve_flux_node(
                 continue;
             }
             let host = channel_effective_host(ch, &main_host);
+            let raw_family = ch
+                .get("ip-version")
+                .or_else(|| ch.get("ip_version"))
+                .or_else(|| ch.get("ipVersion"))
+                .and_then(Value::as_str)
+                .unwrap_or("auto")
+                .trim()
+                .to_ascii_lowercase()
+                .replace(['-', '_'], "");
+            let family = match raw_family.as_str() {
+                "ipv4" | "v4" | "4" => "ipv4",
+                "ipv6" | "v6" | "6" => "ipv6",
+                _ => "auto",
+            };
+            if let Ok(ip) = host.parse::<IpAddr>()
+                && ((ip.is_ipv4() && family == "ipv6") || (ip.is_ipv6() && family == "ipv4"))
+            {
+                ch.insert("enabled".into(), json!(false));
+                continue;
+            }
             if let Some((v4, v6)) = resolved.get(&host) {
-                let family = ch
-                    .get("ip-version")
-                    .or_else(|| ch.get("ip_version"))
-                    .or_else(|| ch.get("ipVersion"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("auto");
                 if (v4.is_empty() || family == "ipv6") && (v6.is_empty() || family == "ipv4") {
                     ch.insert("enabled".into(), json!(false));
                     continue;
