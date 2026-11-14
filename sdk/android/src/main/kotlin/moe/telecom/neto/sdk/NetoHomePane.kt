@@ -121,7 +121,21 @@ fun NetoHomePane(
             } else {
                 0L
             }
-            val endpointText = "127.0.0.1:${snapshot.settings.mixedPort}"
+            val modeLabel = when (snapshot.settings.routingMode.lowercase()) {
+                "global" -> "全局代理"
+                "direct" -> "直连模式"
+                else -> "规则分流"
+            }
+            val detailText = if (conn.connected) {
+                val activeLabel = conn.activeNodeName.ifBlank { snapshot.effectiveRuleLeafName.orEmpty() }
+                if (activeLabel.isNotBlank() && !snapshot.settings.routingMode.equals("direct", ignoreCase = true)) {
+                    "$modeLabel · $activeLabel"
+                } else {
+                    modeLabel
+                }
+            } else {
+                modeLabel
+            }
 
             Card(
                 modifier = Modifier
@@ -160,7 +174,7 @@ fun NetoHomePane(
                             fontFamily = FontFamily.Monospace,
                         )
                         Text(
-                            text = endpointText,
+                            text = detailText,
                             style = MiuixTheme.textStyles.body2,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                             maxLines = 1,
@@ -169,7 +183,7 @@ fun NetoHomePane(
                     }
                     Button(
                         onClick = onToggleConnect,
-                        enabled = !conn.connecting && (conn.connected || snapshot.nodes.isNotEmpty()),
+                        enabled = !conn.connecting && (conn.connected || snapshot.nodes.isNotEmpty() || snapshot.settings.routingMode.equals("direct", ignoreCase = true)),
                         colors = if (conn.connected) ButtonDefaults.buttonColors() else ButtonDefaults.buttonColorsPrimary(),
                     ) {
                         Text(
@@ -185,15 +199,34 @@ fun NetoHomePane(
         }
 
         item(key = "node-selector") {
-            val node = snapshot.selectedNode
-            val summary = if (node == null) {
-                "暂无可用节点"
-            } else {
-                buildString {
-                    append(node.protocolLabel.ifBlank { node.protocol.uppercase() })
-                    node.latencyMs?.let { append(" · ${it} ms") }
-                    if (!node.lastError.isNullOrBlank()) append(" · ${node.lastError}")
+            val isDirect = snapshot.settings.routingMode.equals("direct", ignoreCase = true)
+            val isRule = snapshot.settings.routingMode.equals("rule", ignoreCase = true)
+            val primaryGroup = if (isRule) snapshot.primarySelectGroup else null
+            val leafName = if (isRule) snapshot.effectiveRuleLeafName else snapshot.selectedNode?.name
+            val leafNode = leafName?.let { name -> snapshot.nodes.firstOrNull { it.name == name } } ?: snapshot.selectedNode
+            val selectorTitle = when {
+                isDirect -> "直连模式"
+                primaryGroup != null -> {
+                    val directPick = primaryGroup.now ?: primaryGroup.selected ?: ""
+                    if (directPick.isNotBlank() && !leafName.isNullOrBlank() && directPick != leafName) {
+                        "$directPick · $leafName"
+                    } else {
+                        directPick.ifBlank { leafNode?.name ?: "选择节点" }
+                    }
                 }
+                else -> leafNode?.name ?: "选择节点"
+            }
+            val summary = when {
+                isDirect -> "流量不经过代理节点，点击可管理节点"
+                snapshot.nodes.isEmpty() -> "暂无可用节点"
+                leafName.equals("DIRECT", ignoreCase = true) -> "${primaryGroup?.name ?: "策略组"} · 直接连接"
+                leafName.equals("REJECT", ignoreCase = true) -> "${primaryGroup?.name ?: "策略组"} · 拦截连接"
+                leafNode != null -> buildString {
+                    if (primaryGroup != null) append("${primaryGroup.name} · ")
+                    append(leafNode.protocolLabel.ifBlank { leafNode.protocol.uppercase() })
+                    leafNode.latencyMs?.let { append(" · $it ms") }
+                }
+                else -> "点击选择节点或策略组"
             }
             Card(
                 modifier = Modifier
@@ -202,7 +235,7 @@ fun NetoHomePane(
                     .padding(bottom = 8.dp),
             ) {
                 ArrowPreference(
-                    title = node?.name ?: "选择节点",
+                    title = selectorTitle,
                     summary = summary,
                     onClick = onOpenNodes,
                 )
@@ -269,19 +302,26 @@ fun NetoHomePane(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.End,
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (customizing) {
+                Text(
+                    text = "状态概览",
+                    style = MiuixTheme.textStyles.body2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (customizing) {
+                        TextButton(
+                            text = "恢复默认",
+                            onClick = client::resetDashboardWidgets,
+                        )
+                    }
                     TextButton(
-                        text = "恢复默认",
-                        onClick = client::resetDashboardWidgets,
+                        text = if (customizing) "完成" else "自定义",
+                        onClick = { customizing = !customizing },
                     )
                 }
-                TextButton(
-                    text = if (customizing) "完成" else "自定义",
-                    onClick = { customizing = !customizing },
-                )
             }
         }
 

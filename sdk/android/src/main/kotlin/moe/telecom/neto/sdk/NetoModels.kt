@@ -232,6 +232,28 @@ data class NetoSnapshot(
     val activeProfile: NetoProfileBrief?
         get() = profiles.firstOrNull { it.active } ?: profiles.firstOrNull()
 
+    val primarySelectGroup: NetoProxyGroup?
+        get() = proxyGroups.firstOrNull {
+            it.isManualSelect && it.name in setOf("代理选择", "节点选择", "Proxy", "PROXY", "🚀 节点选择")
+        } ?: proxyGroups.firstOrNull { it.isManualSelect } ?: proxyGroups.firstOrNull()
+
+    fun resolveGroupLeafTarget(groupName: String): String? {
+        var cur = groupName.trim()
+        val seen = HashSet<String>()
+        repeat(16) {
+            if (cur.equals("DIRECT", ignoreCase = true)) return "DIRECT"
+            if (cur.equals("REJECT", ignoreCase = true) || cur.equals("REJECT-DROP", ignoreCase = true)) return "REJECT"
+            if (!seen.add(cur)) return null
+            val grp = proxyGroups.firstOrNull { it.name == cur } ?: return cur
+            val next = grp.now ?: grp.selected ?: grp.proxies.firstOrNull() ?: return null
+            cur = next.trim()
+        }
+        return cur
+    }
+
+    val effectiveRuleLeafName: String?
+        get() = primarySelectGroup?.let { resolveGroupLeafTarget(it.name) } ?: selectedNode?.name
+
     companion object {
         fun fromJson(obj: JSONObject): NetoSnapshot {
             val connObj = obj.optJSONObject("connection") ?: JSONObject()

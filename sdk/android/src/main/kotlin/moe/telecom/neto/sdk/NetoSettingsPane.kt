@@ -54,6 +54,7 @@ fun NetoSettingsPane(
     updateRepo: String = "",
     appVersion: String = "",
     extraHeaderSlot: (@Composable () -> Unit)? = null,
+    generalExtraSlot: (@Composable () -> Unit)? = null,
     extraFooterSlot: (@Composable () -> Unit)? = null,
 ) {
     val settings = snapshot.settings
@@ -178,6 +179,9 @@ fun NetoSettingsPane(
                             subpage = "app_rules"
                         },
                     )
+                    if (generalExtraSlot != null) {
+                        generalExtraSlot()
+                    }
                 }
             }
 

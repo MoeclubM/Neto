@@ -45,7 +45,6 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -124,20 +123,20 @@ fun NetoConnectionsPane(
                     modifier = Modifier.weight(1f),
                     colors = if (!isClosed) ButtonDefaults.buttonColorsPrimary() else ButtonDefaults.buttonColors(),
                 ) {
-                    Text(if (connSnap.active.isNotEmpty()) "活跃会话 (${connSnap.active.size})" else "活跃会话")
+                    Text(if (connSnap.active.isNotEmpty()) "活跃 (${connSnap.active.size})" else "活跃", maxLines = 1)
                 }
                 Button(
                     onClick = { subTab = "closed" },
                     modifier = Modifier.weight(1f),
                     colors = if (isClosed) ButtonDefaults.buttonColorsPrimary() else ButtonDefaults.buttonColors(),
                 ) {
-                    Text(if (connSnap.closed.isNotEmpty()) "已关闭 (${connSnap.closed.size})" else "已关闭")
+                    Text(if (connSnap.closed.isNotEmpty()) "已关 (${connSnap.closed.size})" else "已关闭", maxLines = 1)
                 }
                 Button(
                     onClick = { paused = !paused },
                     colors = if (paused) ButtonDefaults.buttonColorsPrimary() else ButtonDefaults.buttonColors(),
                 ) {
-                    Text(if (paused) "继续" else "暂停")
+                    Text(if (paused) "继续" else "暂停", maxLines = 1)
                 }
                 Button(
                     onClick = {
@@ -153,7 +152,7 @@ fun NetoConnectionsPane(
                     },
                     enabled = if (isClosed) connSnap.closed.isNotEmpty() else connSnap.active.isNotEmpty(),
                 ) {
-                    Text(if (isClosed) "清空记录" else "断开全部")
+                    Text(if (isClosed) "清空" else "全断", maxLines = 1)
                 }
             }
 
@@ -168,26 +167,23 @@ fun NetoConnectionsPane(
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                netOptions.forEach { (key, label) ->
-                    Button(
-                        onClick = { netFilter = key },
-                        colors = if (netFilter == key) ButtonDefaults.buttonColorsPrimary() else ButtonDefaults.buttonColors(),
-                    ) {
-                        Text(label)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    netOptions.forEach { (key, label) ->
+                        NetoFilterChip(
+                            label = label,
+                            selected = netFilter == key,
+                            onClick = { netFilter = key },
+                        )
                     }
                 }
-                Card(modifier = Modifier.weight(1f)) {
-                    OverlayDropdownPreference(
-                        title = "排序",
-                        summary = sortLabels[sortIndex],
-                        items = sortLabels,
-                        selectedIndex = sortIndex,
-                        onSelectedIndexChange = { sortIndex = it },
-                    )
-                }
+                NetoFilterChip(
+                    label = "排序 · ${sortLabels[sortIndex]}",
+                    selected = sortIndex != 0,
+                    onClick = { sortIndex = (sortIndex + 1) % sortLabels.size },
+                )
             }
 
             Text(

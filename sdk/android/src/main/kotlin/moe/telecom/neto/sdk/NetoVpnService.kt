@@ -127,7 +127,14 @@ class NetoVpnService : VpnService() {
             }
             NetoBridge.call("connect_android_tun", params)
 
-            val nodeLabel = if (settings.routingMode == "direct") "直连" else (snap.selectedNode?.name ?: "已连接")
+            val postSnap = runCatching {
+                NetoSnapshot.fromJson(NetoBridge.call("snapshot").getJSONObject("result"))
+            }.getOrDefault(snap)
+            val nodeLabel = when {
+                postSnap.settings.routingMode == "direct" -> "直连"
+                postSnap.connection.activeNodeName.isNotBlank() -> postSnap.connection.activeNodeName
+                else -> postSnap.selectedNode?.name ?: "已连接"
+            }
             val nm = getSystemService(NotificationManager::class.java)
             nm?.notify(NOTIFICATION_ID, buildNotification(appTitle, nodeLabel))
         } catch (err: Throwable) {

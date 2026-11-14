@@ -140,18 +140,30 @@ class NetoControllerClient(
     }
 
     fun testAllNodes() {
+        val prevLeaf = _snapshot.value.effectiveRuleLeafName
+        val wasRuleConnected = _snapshot.value.connection.connected &&
+            _snapshot.value.settings.routingMode.equals("rule", ignoreCase = true)
         scope.launch(Dispatchers.IO) {
             runCatching { NetoBridge.call("test_all_nodes") }
                 .onFailure { _actionError.value = it.message }
-            runCatching { refreshSnapshotNow() }
+            val next = runCatching { refreshSnapshotNow() }.getOrNull()
+            if (wasRuleConnected && next != null && next.connection.connected && next.effectiveRuleLeafName != prevLeaf) {
+                NetoVpnService.start(appContext, appTitle)
+            }
         }
     }
 
     fun testGroupNodes(groupName: String) {
+        val prevLeaf = _snapshot.value.effectiveRuleLeafName
+        val wasRuleConnected = _snapshot.value.connection.connected &&
+            _snapshot.value.settings.routingMode.equals("rule", ignoreCase = true)
         scope.launch(Dispatchers.IO) {
             runCatching { NetoBridge.call("test_group_nodes", JSONObject().put("group_name", groupName)) }
                 .onFailure { _actionError.value = it.message }
-            runCatching { refreshSnapshotNow() }
+            val next = runCatching { refreshSnapshotNow() }.getOrNull()
+            if (wasRuleConnected && next != null && next.connection.connected && next.effectiveRuleLeafName != prevLeaf) {
+                NetoVpnService.start(appContext, appTitle)
+            }
         }
     }
 

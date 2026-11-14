@@ -231,7 +231,9 @@ fn resolve_rule_target(
             cur = next.trim().to_string();
             continue;
         }
-        if let Some(grp) = config.proxy_group(&cur)
+        if selected_proxy.is_none()
+            && group_targets.is_empty()
+            && let Some(grp) = config.proxy_group(&cur)
             && let Some(first) = grp.proxies.first()
         {
             cur = first.trim().to_string();
@@ -248,7 +250,9 @@ fn resolve_rule_target(
     if cur.eq_ignore_ascii_case("PASS") {
         return "PASS".to_string();
     }
-    if resolved_nodes.contains_key(&cur) || config.proxy(&cur).is_some() {
+    if resolved_nodes.contains_key(&cur)
+        || (config.proxy_group(&cur).is_none() && config.proxy(&cur).is_some())
+    {
         return cur;
     }
     if let Some(sel) = selected_proxy.map(str::trim).filter(|s| !s.is_empty()) {
@@ -646,6 +650,67 @@ rules:
         let assets = route_assets_dir(None);
         assert!(assets.is_some());
         config.route_table_with_assets(assets.as_deref())?;
+        Ok(())
+    }
+
+    #[test]
+    fn resolves_rule_targets_via_group_targets_and_selected_proxy() -> Result<()> {
+        let yaml = r#"
+proxies:
+  - name: NodeA
+    type: socks5
+    server: 127.0.0.1
+    port: 1080
+  - name: NodeB
+    type: socks5
+    server: 127.0.0.1
+    port: 1081
+proxy-groups:
+  - name: 代理选择
+    type: select
+    proxies:
+      - 自动选择
+      - NodeA
+      - NodeB
+  - name: 自动选择
+    type: url-test
+    proxies:
+      - NodeA
+      - NodeB
+rules:
+  - DOMAIN-SUFFIX,google.com,代理选择
+  - MATCH,代理选择
+"#;
+        let (_, _, routes_fallback) = compile_route_config(
+            yaml,
+            None,
+            None,
+            Some("NodeB"),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )?;
+        let decision = routes_fallback.try_decide(
+            &ProxyTarget::Domain("www.google.com".to_string(), 443),
+            RouteNetwork::Tcp,
+        )?;
+        assert_eq!(decision, RouteDecision::Proxy("NodeB".to_string()));
+
+        let mut gt = BTreeMap::new();
+        gt.insert("代理选择".to_string(), "自动选择".to_string());
+        gt.insert("自动选择".to_string(), "NodeB".to_string());
+        let (_, _, routes_grouped) = compile_route_config(
+            yaml,
+            None,
+            None,
+            Some("NodeA"),
+            &gt,
+            &BTreeMap::new(),
+        )?;
+        let decision2 = routes_grouped.try_decide(
+            &ProxyTarget::Domain("www.google.com".to_string(), 443),
+            RouteNetwork::Tcp,
+        )?;
+        assert_eq!(decision2, RouteDecision::Proxy("NodeB".to_string()));
         Ok(())
     }
 }

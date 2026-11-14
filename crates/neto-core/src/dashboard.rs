@@ -52,11 +52,8 @@ impl DashboardWidgetId {
             self,
             Self::NetworkSpeed
                 | Self::TrafficUsage
-                | Self::ActiveConnections
                 | Self::ExitCheck
-                | Self::LatencyProbe
                 | Self::ProfilesSummary
-                | Self::RuntimeInfo
         )
     }
 }

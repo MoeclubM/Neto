@@ -485,36 +485,7 @@ async fn parse_yaml_profile_with_base(
         }
     }
 
-    let mut proxy_groups = Vec::new();
-    if let Some(serde_yaml::Value::Sequence(groups)) = root
-        .get(serde_yaml::Value::String("proxy-groups".into()))
-        .or_else(|| root.get(serde_yaml::Value::String("proxy_groups".into())))
-    {
-        for g in groups {
-            if let serde_yaml::Value::Mapping(gm) = g {
-                let Some(name) = yaml_field_str(gm, "name") else {
-                    continue;
-                };
-                let group_type =
-                    yaml_field_str(gm, "type").unwrap_or_else(|| "select".to_string());
-                let proxies = gm
-                    .get(serde_yaml::Value::String("proxies".into()))
-                    .and_then(serde_yaml::Value::as_sequence)
-                    .map(|seq| seq.iter().filter_map(yaml_str).collect::<Vec<_>>())
-                    .unwrap_or_default();
-                let selected = proxies.first().cloned();
-                let now = selected.clone();
-                proxy_groups.push(ProxyGroupSummary {
-                    name,
-                    group_type,
-                    proxies,
-                    selected,
-                    now,
-                });
-            }
-        }
-    }
-    recompute_proxy_groups(&nodes, &mut proxy_groups);
+    let proxy_groups = extract_proxy_groups_from_mapping(&root, &rules, &nodes);
 
     ensure!(
         !nodes.is_empty() || !rules.is_empty(),
@@ -553,15 +524,444 @@ pub fn build_profile_from_raw_nodes(
             nodes.push(summary);
         }
     }
+    let proxy_groups = route_config_yaml
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|yaml| extract_proxy_groups_from_yaml(yaml, &nodes))
+        .unwrap_or_default();
     ParsedProfilePayload {
         user_info,
         nodes,
-        proxy_groups: Vec::new(),
+        proxy_groups,
         raw_yaml: route_config_yaml.clone(),
         route_config_yaml,
         rule_count,
         rules_preview,
     }
+}
+
+fn normalize_builtin_action(raw: &str) -> Option<&'static str> {
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("DIRECT") {
+        Some("DIRECT")
+    } else if trimmed.eq_ignore_ascii_case("REJECT") {
+        Some("REJECT")
+    } else if trimmed.eq_ignore_ascii_case("REJECT-DROP") {
+        Some("REJECT-DROP")
+    } else if trimmed.eq_ignore_ascii_case("PASS") {
+        Some("PASS")
+    } else {
+        None
+    }
+}
+
+fn extract_rule_action_name(rule: &str) -> Option<String> {
+    let trimmed = rule.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let head = match trimmed.rsplit_once(',') {
+        Some((before, last)) if last.trim().eq_ignore_ascii_case("no-resolve") => before.trim_end(),
+        _ => trimmed,
+    };
+    let (_, action) = head.rsplit_once(',')?;
+    let action = action.trim();
+    (!action.is_empty()).then(|| action.to_string())
+}
+
+fn node_matches_group_filters(
+    node_name: &str,
+    filter: Option<&str>,
+    exclude_filter: Option<&str>,
+) -> bool {
+    if let Some(pat) = filter.map(str::trim).filter(|s| !s.is_empty()) {
+        let matched = pat
+            .split('|')
+            .map(|p| p.trim().trim_start_matches("(?i)"))
+            .filter(|p| !p.is_empty())
+            .any(|p| node_name.to_lowercase().contains(&p.to_lowercase()));
+        if !matched {
+            return false;
+        }
+    }
+    if let Some(pat) = exclude_filter.map(str::trim).filter(|s| !s.is_empty()) {
+        let excluded = pat
+            .split('|')
+            .map(|p| p.trim().trim_start_matches("(?i)"))
+            .filter(|p| !p.is_empty())
+            .any(|p| node_name.to_lowercase().contains(&p.to_lowercase()));
+        if excluded {
+            return false;
+        }
+    }
+    true
+}
+
+fn insert_before_trailing_builtins(proxies: &mut Vec<String>, extra: Vec<String>) {
+    if extra.is_empty() {
+        return;
+    }
+    let mut insert_pos = proxies.len();
+    while insert_pos > 0 && normalize_builtin_action(&proxies[insert_pos - 1]).is_some() {
+        insert_pos -= 1;
+    }
+    for name in extra {
+        if !proxies.iter().any(|p| p == &name) {
+            proxies.insert(insert_pos, name);
+            insert_pos += 1;
+        }
+    }
+}
+
+pub fn extract_proxy_groups_from_yaml(
+    yaml_text: &str,
+    nodes: &[NodeSummary],
+) -> Vec<ProxyGroupSummary> {
+    let Ok(serde_yaml::Value::Mapping(root)) = serde_yaml::from_str::<serde_yaml::Value>(yaml_text.trim()) else {
+        return Vec::new();
+    };
+    let rules: Vec<String> = root
+        .get(serde_yaml::Value::String("rules".into()))
+        .and_then(serde_yaml::Value::as_sequence)
+        .map(|seq| seq.iter().filter_map(yaml_str).collect())
+        .unwrap_or_default();
+    extract_proxy_groups_from_mapping(&root, &rules, nodes)
+}
+
+fn extract_proxy_groups_from_mapping(
+    root: &serde_yaml::Mapping,
+    rules: &[String],
+    nodes: &[NodeSummary],
+) -> Vec<ProxyGroupSummary> {
+    let yaml_proxy_names: BTreeSet<String> = root
+        .get(serde_yaml::Value::String("proxies".into()))
+        .and_then(serde_yaml::Value::as_sequence)
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|item| item.as_mapping().and_then(|m| yaml_field_str(m, "name")))
+                .collect()
+        })
+        .unwrap_or_default();
+    let node_names: BTreeSet<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+
+    struct RawGroupSpec {
+        name: String,
+        group_type: String,
+        proxies: Vec<String>,
+        include_all: bool,
+        filter: Option<String>,
+        exclude_filter: Option<String>,
+    }
+
+    let mut raw_specs = Vec::new();
+    if let Some(serde_yaml::Value::Sequence(groups)) = root
+        .get(serde_yaml::Value::String("proxy-groups".into()))
+        .or_else(|| root.get(serde_yaml::Value::String("proxy_groups".into())))
+    {
+        for g in groups {
+            if let serde_yaml::Value::Mapping(gm) = g {
+                let Some(name) = yaml_field_str(gm, "name") else {
+                    continue;
+                };
+                let group_type =
+                    yaml_field_str(gm, "type").unwrap_or_else(|| "select".to_string());
+                let proxies = gm
+                    .get(serde_yaml::Value::String("proxies".into()))
+                    .and_then(serde_yaml::Value::as_sequence)
+                    .map(|seq| {
+                        seq.iter()
+                            .filter_map(yaml_str)
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let include_all = gm
+                    .get(serde_yaml::Value::String("include-all".into()))
+                    .or_else(|| gm.get(serde_yaml::Value::String("include-all-proxies".into())))
+                    .and_then(serde_yaml::Value::as_bool)
+                    .unwrap_or(false);
+                let filter = yaml_field_str(gm, "filter");
+                let exclude_filter = yaml_field_str(gm, "exclude-filter");
+                raw_specs.push(RawGroupSpec {
+                    name,
+                    group_type,
+                    proxies,
+                    include_all,
+                    filter,
+                    exclude_filter,
+                });
+            }
+        }
+    }
+
+    let mut proxy_groups = Vec::new();
+    if !raw_specs.is_empty() {
+        let group_names: BTreeSet<String> = raw_specs.iter().map(|g| g.name.clone()).collect();
+        for spec in raw_specs {
+            let had_all_yaml_proxies = !yaml_proxy_names.is_empty()
+                && yaml_proxy_names
+                    .iter()
+                    .all(|yp| spec.proxies.iter().any(|p| p == yp));
+            let mut cleaned = Vec::new();
+            for entry in &spec.proxies {
+                if let Some(builtin) = normalize_builtin_action(entry) {
+                    let b = builtin.to_string();
+                    if !cleaned.contains(&b) {
+                        cleaned.push(b);
+                    }
+                } else if (entry != &spec.name && group_names.contains(entry))
+                    || node_names.contains(entry.as_str())
+                {
+                    if !cleaned.contains(entry) {
+                        cleaned.push(entry.clone());
+                    }
+                }
+            }
+            let had_no_valid_nodes = !cleaned.iter().any(|p| node_names.contains(p.as_str()));
+            let wants_all_nodes = spec.include_all
+                || had_all_yaml_proxies
+                || (yaml_proxy_names.is_empty() && had_no_valid_nodes && cleaned.iter().all(|p| normalize_builtin_action(p).is_some()));
+            if wants_all_nodes {
+                let extra: Vec<String> = nodes
+                    .iter()
+                    .filter(|n| {
+                        node_matches_group_filters(
+                            &n.name,
+                            spec.filter.as_deref(),
+                            spec.exclude_filter.as_deref(),
+                        )
+                    })
+                    .map(|n| n.name.clone())
+                    .collect();
+                insert_before_trailing_builtins(&mut cleaned, extra);
+            }
+            if !cleaned.is_empty() {
+                let selected = cleaned.first().cloned();
+                proxy_groups.push(ProxyGroupSummary {
+                    name: spec.name,
+                    group_type: spec.group_type,
+                    proxies: cleaned,
+                    now: selected.clone(),
+                    selected,
+                });
+            }
+        }
+        if !nodes.is_empty() && !proxy_groups.is_empty() {
+            let covered_in_select: BTreeSet<String> = proxy_groups
+                .iter()
+                .filter(|g| g.group_type.eq_ignore_ascii_case("select"))
+                .flat_map(|g| g.proxies.iter().cloned())
+                .collect();
+            let uncovered: Vec<String> = nodes
+                .iter()
+                .filter(|n| !covered_in_select.contains(&n.name))
+                .map(|n| n.name.clone())
+                .collect();
+            if !uncovered.is_empty() {
+                let primary_idx = find_primary_select_group_index(&proxy_groups, Some(rules));
+                if let Some(idx) = primary_idx {
+                    insert_before_trailing_builtins(&mut proxy_groups[idx].proxies, uncovered);
+                    if proxy_groups[idx].selected.is_none() {
+                        proxy_groups[idx].selected = proxy_groups[idx].proxies.first().cloned();
+                        proxy_groups[idx].now = proxy_groups[idx].selected.clone();
+                    }
+                }
+            }
+        }
+    } else if !rules.is_empty() && !nodes.is_empty() {
+        let mut rule_group_names = Vec::new();
+        let mut match_group_name = None;
+        for rule in rules {
+            if let Some(action) = extract_rule_action_name(rule) {
+                if normalize_builtin_action(&action).is_some()
+                    || node_names.contains(action.as_str())
+                {
+                    continue;
+                }
+                if rule.trim_start().to_ascii_uppercase().starts_with("MATCH,") {
+                    match_group_name = Some(action.clone());
+                }
+                if !rule_group_names.contains(&action) {
+                    rule_group_names.push(action);
+                }
+            }
+        }
+        let primary_name = match_group_name
+            .or_else(|| rule_group_names.first().cloned())
+            .unwrap_or_else(|| "代理选择".to_string());
+        let all_node_names: Vec<String> = nodes.iter().map(|n| n.name.clone()).collect();
+        let auto_name = if primary_name == "自动选择" {
+            "自动测速".to_string()
+        } else {
+            "自动选择".to_string()
+        };
+        let mut primary_proxies = Vec::with_capacity(all_node_names.len() + 2);
+        primary_proxies.push(auto_name.clone());
+        primary_proxies.extend(all_node_names.iter().cloned());
+        primary_proxies.push("DIRECT".to_string());
+        proxy_groups.push(ProxyGroupSummary {
+            name: primary_name.clone(),
+            group_type: "select".to_string(),
+            selected: primary_proxies.first().cloned(),
+            now: primary_proxies.first().cloned(),
+            proxies: primary_proxies,
+        });
+        proxy_groups.push(ProxyGroupSummary {
+            name: auto_name.clone(),
+            group_type: "url-test".to_string(),
+            selected: all_node_names.first().cloned(),
+            now: all_node_names.first().cloned(),
+            proxies: all_node_names.clone(),
+        });
+        for extra_name in rule_group_names {
+            if extra_name == primary_name || extra_name == auto_name {
+                continue;
+            }
+            let mut proxies = Vec::with_capacity(all_node_names.len() + 3);
+            proxies.push(primary_name.clone());
+            proxies.push(auto_name.clone());
+            proxies.extend(all_node_names.iter().cloned());
+            proxies.push("DIRECT".to_string());
+            proxy_groups.push(ProxyGroupSummary {
+                name: extra_name,
+                group_type: "select".to_string(),
+                selected: Some(primary_name.clone()),
+                now: Some(primary_name.clone()),
+                proxies,
+            });
+        }
+    }
+
+    recompute_proxy_groups(nodes, &mut proxy_groups);
+    proxy_groups
+}
+
+pub fn reconcile_proxy_groups_with_nodes(
+    existing_groups: &[ProxyGroupSummary],
+    route_config_yaml: Option<&str>,
+    nodes: &[NodeSummary],
+) -> Vec<ProxyGroupSummary> {
+    if let Some(yaml) = route_config_yaml.filter(|s| !s.trim().is_empty()) {
+        let mut extracted = extract_proxy_groups_from_yaml(yaml, nodes);
+        if !extracted.is_empty() {
+            merge_preserved_groups(existing_groups, &mut extracted, nodes);
+            return extracted;
+        }
+    }
+    if existing_groups.is_empty() {
+        return Vec::new();
+    }
+    let node_names: BTreeSet<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+    let group_names: BTreeSet<&str> = existing_groups.iter().map(|g| g.name.as_str()).collect();
+    let prev_node_set: BTreeSet<&str> = existing_groups
+        .iter()
+        .flat_map(|g| g.proxies.iter().map(String::as_str))
+        .filter(|p| normalize_builtin_action(p).is_none() && !group_names.contains(p))
+        .collect();
+    let mut updated = Vec::with_capacity(existing_groups.len());
+    for g in existing_groups {
+        let had_all_prev_nodes =
+            !prev_node_set.is_empty() && prev_node_set.iter().all(|pn| g.proxies.iter().any(|p| p == pn));
+        let mut cleaned: Vec<String> = g
+            .proxies
+            .iter()
+            .filter(|p| {
+                normalize_builtin_action(p).is_some()
+                    || (p.as_str() != g.name && group_names.contains(p.as_str()))
+                    || node_names.contains(p.as_str())
+            })
+            .cloned()
+            .collect();
+        if had_all_prev_nodes {
+            let extra: Vec<String> = nodes.iter().map(|n| n.name.clone()).collect();
+            insert_before_trailing_builtins(&mut cleaned, extra);
+        }
+        if !cleaned.is_empty() {
+            updated.push(ProxyGroupSummary {
+                name: g.name.clone(),
+                group_type: g.group_type.clone(),
+                proxies: cleaned,
+                selected: g.selected.clone(),
+                now: g.now.clone(),
+            });
+        }
+    }
+    merge_preserved_groups(existing_groups, &mut updated, nodes);
+    updated
+}
+
+pub fn find_primary_select_group_index(
+    groups: &[ProxyGroupSummary],
+    rules: Option<&[String]>,
+) -> Option<usize> {
+    if let Some(rules) = rules {
+        for rule in rules.iter().rev() {
+            if rule.trim_start().to_ascii_uppercase().starts_with("MATCH,")
+                && let Some(action) = extract_rule_action_name(rule)
+                && let Some(idx) = groups.iter().position(|g| {
+                    g.group_type.eq_ignore_ascii_case("select") && g.name == action
+                })
+            {
+                return Some(idx);
+            }
+        }
+    }
+    groups
+        .iter()
+        .position(|g| {
+            g.group_type.eq_ignore_ascii_case("select")
+                && matches!(
+                    g.name.as_str(),
+                    "代理选择" | "节点选择" | "Proxy" | "PROXY" | "🚀 节点选择"
+                )
+        })
+        .or_else(|| {
+            groups
+                .iter()
+                .position(|g| g.group_type.eq_ignore_ascii_case("select"))
+        })
+}
+
+pub fn primary_select_group_index_from_yaml(
+    groups: &[ProxyGroupSummary],
+    route_yaml: Option<&str>,
+) -> Option<usize> {
+    let rules: Option<Vec<String>> = route_yaml.and_then(|yaml| {
+        let root = serde_yaml::from_str::<serde_yaml::Value>(yaml.trim()).ok()?;
+        root.as_mapping()?
+            .get(serde_yaml::Value::String("rules".into()))?
+            .as_sequence()
+            .map(|seq| seq.iter().filter_map(yaml_str).collect())
+    });
+    find_primary_select_group_index(groups, rules.as_deref())
+}
+
+pub fn resolve_group_leaf_target(
+    group_name: &str,
+    groups: &[ProxyGroupSummary],
+) -> Option<String> {
+    let mut cur = group_name.trim().to_string();
+    let mut seen = BTreeSet::new();
+    for _ in 0..16 {
+        if let Some(builtin) = normalize_builtin_action(&cur) {
+            return Some(builtin.to_string());
+        }
+        if !seen.insert(cur.clone()) {
+            return None;
+        }
+        if let Some(grp) = groups.iter().find(|g| g.name == cur) {
+            let next = grp
+                .now
+                .as_deref()
+                .or(grp.selected.as_deref())
+                .or_else(|| grp.proxies.first().map(String::as_str))?;
+            cur = next.trim().to_string();
+        } else {
+            return Some(cur);
+        }
+    }
+    Some(cur)
 }
 
 async fn fetch_http_rule_provider(
@@ -847,5 +1247,70 @@ rules:
         assert_eq!(parsed.proxy_groups.len(), 1);
         assert_eq!(parsed.rule_count, 3);
         Ok(())
+    }
+
+    #[test]
+    fn builds_groups_from_raw_nodes_and_injects_extra_plugin_nodes() {
+        let raw_nodes = vec![
+            serde_json::json!({
+                "name": "HK-AnyTLS",
+                "type": "anytls",
+                "server": "hk.example.com",
+                "port": 443,
+                "password": "p1",
+                "tls": true
+            }),
+            serde_json::json!({
+                "name": "JP-Flux",
+                "type": "flux",
+                "server": "jp.example.com",
+                "port": 443,
+                "password": "p2",
+                "tls": true
+            }),
+        ];
+        let yaml = r#"
+proxies:
+  - name: HK-AnyTLS
+    type: anytls
+    server: hk.example.com
+    port: 443
+    password: p1
+proxy-groups:
+  - name: 代理选择
+    type: select
+    proxies:
+      - 自动选择
+      - HK-AnyTLS
+      - DIRECT
+  - name: 自动选择
+    type: url-test
+    proxies:
+      - HK-AnyTLS
+rules:
+  - GEOIP,CN,DIRECT,no-resolve
+  - MATCH,代理选择
+"#;
+        let payload = build_profile_from_raw_nodes(
+            raw_nodes,
+            Some(yaml.to_string()),
+            vec![],
+            2,
+            None,
+        );
+        assert_eq!(payload.nodes.len(), 2);
+        assert_eq!(payload.proxy_groups.len(), 2);
+        assert_eq!(
+            payload.proxy_groups[0].proxies,
+            vec!["自动选择", "HK-AnyTLS", "JP-Flux", "DIRECT"]
+        );
+        assert_eq!(
+            payload.proxy_groups[1].proxies,
+            vec!["HK-AnyTLS", "JP-Flux"]
+        );
+        assert_eq!(
+            resolve_group_leaf_target("代理选择", &payload.proxy_groups).as_deref(),
+            Some("HK-AnyTLS")
+        );
     }
 }

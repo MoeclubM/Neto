@@ -11,8 +11,10 @@ use crate::doh::prepare_node_for_connect;
 use crate::http_proxy::HttpProxyBridge;
 use crate::profile::{
     NodeSummary, ParsedProfilePayload, ProfileRecord, SubscriptionUserInfo,
-    build_profile_from_raw_nodes, fetch_and_parse_subscription, merge_preserved_groups,
-    merge_preserved_latencies, parse_yaml_profile, recompute_proxy_groups,
+    build_profile_from_raw_nodes, extract_proxy_groups_from_yaml, fetch_and_parse_subscription,
+    merge_preserved_groups, merge_preserved_latencies, parse_yaml_profile,
+    primary_select_group_index_from_yaml, reconcile_proxy_groups_with_nodes,
+    recompute_proxy_groups, resolve_group_leaf_target,
 };
 use crate::route::{StartRouteRequest, start_route_from_json, stop_route, test_route_from_json};
 use crate::runtime::{
@@ -411,11 +413,19 @@ impl NetoController {
                 .find(|p| p.id == id)
                 .map(|existing| {
                     merge_preserved_latencies(&existing.nodes, &mut payload.nodes);
-                    merge_preserved_groups(
-                        &existing.proxy_groups,
-                        &mut payload.proxy_groups,
-                        &payload.nodes,
-                    );
+                    if preserve_routes && payload.route_config_yaml.is_none() && payload.proxy_groups.is_empty() {
+                        payload.proxy_groups = reconcile_proxy_groups_with_nodes(
+                            &existing.proxy_groups,
+                            existing.route_config_yaml.as_deref().or(existing.raw_yaml.as_deref()),
+                            &payload.nodes,
+                        );
+                    } else {
+                        merge_preserved_groups(
+                            &existing.proxy_groups,
+                            &mut payload.proxy_groups,
+                            &payload.nodes,
+                        );
+                    }
                     existing.name = name.to_string();
                     existing.url = url.to_string();
                     existing.updated_at_unix = telemetry::now_ms() / 1000;
@@ -706,6 +716,8 @@ impl NetoController {
         let was_connected = {
             let mut guard = self.state.lock().expect("controller state lock poisoned");
             guard.store.selected_node_index = index;
+            let custom_yaml = (!guard.store.settings.custom_route_yaml.trim().is_empty())
+                .then(|| guard.store.settings.custom_route_yaml.clone());
             let active_id = guard.store.active_profile_id.clone();
             let prof = match active_id.as_deref() {
                 Some(id) => guard.store.profiles.iter_mut().find(|p| p.id == id),
@@ -714,11 +726,30 @@ impl NetoController {
             if let Some(prof) = prof
                 && let Some(node_name) = prof.nodes.get(index).map(|n| n.name.clone())
             {
-                if let Some(primary_group) = prof.proxy_groups.iter_mut().find(|g| {
-                    g.group_type.eq_ignore_ascii_case("select")
-                        && g.proxies.iter().any(|p| p == &node_name)
-                }) {
-                    primary_group.selected = Some(node_name);
+                let effective_yaml = custom_yaml
+                    .as_deref()
+                    .or(prof.route_config_yaml.as_deref());
+                if let Some(p_idx) =
+                    primary_select_group_index_from_yaml(&prof.proxy_groups, effective_yaml)
+                {
+                    if prof.proxy_groups[p_idx].proxies.iter().any(|p| p == &node_name) {
+                        prof.proxy_groups[p_idx].selected = Some(node_name);
+                    } else {
+                        let primary_proxies = prof.proxy_groups[p_idx].proxies.clone();
+                        let sub_match = prof
+                            .proxy_groups
+                            .iter()
+                            .position(|g| {
+                                g.group_type.eq_ignore_ascii_case("select")
+                                    && primary_proxies.contains(&g.name)
+                                    && g.proxies.contains(&node_name)
+                            });
+                        if let Some(sub_idx) = sub_match {
+                            let sub_name = prof.proxy_groups[sub_idx].name.clone();
+                            prof.proxy_groups[sub_idx].selected = Some(node_name);
+                            prof.proxy_groups[p_idx].selected = Some(sub_name);
+                        }
+                    }
                 }
                 recompute_proxy_groups(&prof.nodes, &mut prof.proxy_groups);
             }
@@ -737,6 +768,8 @@ impl NetoController {
     pub fn select_group_proxy(&self, group_name: &str, proxy_name: &str) -> Result<()> {
         {
             let mut guard = self.state.lock().expect("controller state lock poisoned");
+            let custom_yaml = (!guard.store.settings.custom_route_yaml.trim().is_empty())
+                .then(|| guard.store.settings.custom_route_yaml.clone());
             let prof_idx = guard
                 .store
                 .active_profile_id
@@ -749,16 +782,6 @@ impl NetoController {
                     .profiles
                     .get_mut(prof_idx)
                     .context("no active profile")?;
-                let primary_select_name = prof
-                    .proxy_groups
-                    .iter()
-                    .find(|g| {
-                        g.group_type.eq_ignore_ascii_case("select")
-                            && g.proxies
-                                .iter()
-                                .any(|p| prof.nodes.iter().any(|n| n.name == *p))
-                    })
-                    .map(|g| g.name.clone());
                 let group = prof
                     .proxy_groups
                     .iter_mut()
@@ -767,11 +790,15 @@ impl NetoController {
                 group.selected = Some(proxy_name.to_string());
                 group.now = Some(proxy_name.to_string());
                 recompute_proxy_groups(&prof.nodes, &mut prof.proxy_groups);
-                if primary_select_name.as_deref() == Some(group_name) {
-                    prof.nodes.iter().position(|n| n.name == proxy_name)
-                } else {
-                    None
-                }
+                let effective_yaml = custom_yaml
+                    .as_deref()
+                    .or(prof.route_config_yaml.as_deref());
+                primary_select_group_index_from_yaml(&prof.proxy_groups, effective_yaml)
+                    .and_then(|p_idx| {
+                        resolve_group_leaf_target(&prof.proxy_groups[p_idx].name, &prof.proxy_groups)
+                    })
+                    .and_then(|leaf| prof.nodes.iter().position(|n| n.name == leaf))
+                    .or_else(|| prof.nodes.iter().position(|n| n.name == proxy_name))
             };
             if let Some(node_idx) = matched_node_idx {
                 guard.store.selected_node_index = node_idx;
@@ -1101,16 +1128,10 @@ impl NetoController {
         }
         let prof = active_profile_ref(&guard.store).context("暂无可用订阅")?;
         ensure!(!prof.nodes.is_empty(), "当前订阅没有可用节点");
-        let idx = guard
+        let fallback_idx = guard
             .store
             .selected_node_index
             .min(prof.nodes.len().saturating_sub(1));
-        let node = prof.nodes[idx].clone();
-        ensure!(
-            node.supported,
-            "当前节点协议 {} 暂不支持",
-            node.protocol_label
-        );
         let route_yaml = if !settings.custom_route_yaml.trim().is_empty() {
             Some(settings.custom_route_yaml.trim().to_string())
         } else {
@@ -1122,8 +1143,53 @@ impl NetoController {
                 group_targets.insert(grp.name.clone(), target.clone());
             }
         }
-        let mut extra_nodes = Vec::new();
+        let is_rule_with_yaml = settings.routing_mode == RoutingMode::Rule
+            && route_yaml.as_deref().is_some_and(|s| !s.trim().is_empty());
+        let effective_idx = if is_rule_with_yaml {
+            primary_select_group_index_from_yaml(&prof.proxy_groups, route_yaml.as_deref())
+                .and_then(|p_idx| {
+                    resolve_group_leaf_target(&prof.proxy_groups[p_idx].name, &prof.proxy_groups)
+                })
+                .and_then(|leaf| {
+                    prof.nodes
+                        .iter()
+                        .position(|n| n.name == leaf && n.supported)
+                })
+                .unwrap_or(fallback_idx)
+        } else {
+            fallback_idx
+        };
+        let node = prof.nodes[effective_idx].clone();
+        ensure!(
+            node.supported,
+            "当前节点协议 {} 暂不支持",
+            node.protocol_label
+        );
+        let mut needed_names = BTreeSet::new();
         for target_name in group_targets.values() {
+            needed_names.insert(target_name.clone());
+        }
+        for grp in &prof.proxy_groups {
+            if let Some(leaf) = resolve_group_leaf_target(&grp.name, &prof.proxy_groups) {
+                needed_names.insert(leaf);
+            }
+        }
+        if let Some(yaml) = route_yaml.as_deref() {
+            for line in yaml.lines() {
+                let trimmed = line.trim().trim_start_matches('-').trim();
+                let head = match trimmed.rsplit_once(',') {
+                    Some((before, last)) if last.trim().eq_ignore_ascii_case("no-resolve") => {
+                        before.trim_end()
+                    }
+                    _ => trimmed,
+                };
+                if let Some((_, act)) = head.rsplit_once(',') {
+                    needed_names.insert(act.trim().to_string());
+                }
+            }
+        }
+        let mut extra_nodes = Vec::new();
+        for target_name in &needed_names {
             if target_name == &node.name {
                 continue;
             }
@@ -1988,7 +2054,13 @@ impl NetoController {
                             .store
                             .selected_node_index
                             .min(prof.nodes.len().saturating_sub(1));
-                        sel_proxy = prof.nodes.get(idx).map(|n| n.name.clone());
+                        let rule_idx = primary_select_group_index_from_yaml(&prof.proxy_groups, Some(&y))
+                            .and_then(|p_idx| {
+                                resolve_group_leaf_target(&prof.proxy_groups[p_idx].name, &prof.proxy_groups)
+                            })
+                            .and_then(|leaf| prof.nodes.iter().position(|n| n.name == leaf))
+                            .unwrap_or(idx);
+                        sel_proxy = prof.nodes.get(rule_idx).map(|n| n.name.clone());
                     }
                     (y, sel_proxy, gt)
                 };
@@ -2089,7 +2161,22 @@ fn load_store(data_dir: &Path) -> Result<PersistedStore> {
     let mut store: PersistedStore = serde_json::from_slice(&bytes)?;
     store.settings = store.settings.normalized();
     for prof in &mut store.profiles {
-        recompute_proxy_groups(&prof.nodes, &mut prof.proxy_groups);
+        if prof.proxy_groups.is_empty() && !prof.nodes.is_empty() {
+            if let Some(yaml) = prof
+                .route_config_yaml
+                .as_deref()
+                .or(prof.raw_yaml.as_deref())
+                .filter(|s| !s.trim().is_empty())
+            {
+                prof.proxy_groups = extract_proxy_groups_from_yaml(yaml, &prof.nodes);
+            }
+        } else {
+            prof.proxy_groups = reconcile_proxy_groups_with_nodes(
+                &prof.proxy_groups,
+                prof.route_config_yaml.as_deref().or(prof.raw_yaml.as_deref()),
+                &prof.nodes,
+            );
+        }
     }
     Ok(store)
 }
