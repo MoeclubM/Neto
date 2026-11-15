@@ -1,11 +1,15 @@
 package moe.telecom.neto
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -33,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import moe.telecom.neto.sdk.NetoConnectionsPane
 import moe.telecom.neto.sdk.NetoControllerClient
@@ -47,6 +52,7 @@ import top.yukonga.miuix.kmp.basic.NavigationBarItem
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import java.io.File
 
 enum class NetoTab(val title: String, val icon: ImageVector) {
     HOME("主页", Icons.Rounded.Bolt),
@@ -215,10 +221,39 @@ private fun NetoStandaloneApp(
                     logs = logs,
                     installedApps = installedApps,
                     client = client,
+                    appTitle = "Neto",
                     updateRepo = "MoeclubM/Neto",
                     appVersion = BuildConfig.VERSION_NAME,
+                    onInstallApk = ::installDownloadedApk,
                 )
             }
         }
     }
+}
+
+private fun installDownloadedApk(context: Context, apkFile: File) {
+    val pm = context.packageManager
+    val pkgInfo = pm.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.PackageInfoFlags.of(0L))
+        ?: throw IllegalStateException("下载的安装包无法解析")
+    if (pkgInfo.packageName != context.packageName) {
+        throw IllegalStateException("更新安装包包名不匹配：${pkgInfo.packageName}")
+    }
+    if (!pm.canRequestPackageInstalls()) {
+        val permIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+            data = Uri.parse("package:${context.packageName}")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(permIntent)
+        Toast.makeText(context, "请允许安装未知来源更新后重试", Toast.LENGTH_LONG).show()
+        return
+    }
+    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", apkFile)
+    val installIntent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, "application/vnd.android.package-archive")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        if (context !is android.app.Activity) {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+    context.startActivity(installIntent)
 }

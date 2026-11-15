@@ -413,6 +413,12 @@ public sealed class NetoClient : IDisposable
         return res.Deserialize<NetoDownloadUpdateResult>() ?? new NetoDownloadUpdateResult();
     }
 
+    public async Task<NetoUpdateProgress> GetUpdateProgressAsync()
+    {
+        var res = await NetoNativeBridge.CallAsync("update_progress");
+        return res.Deserialize<NetoUpdateProgress>() ?? new NetoUpdateProgress();
+    }
+
     private async Task InvokeSnapshotCallAsync(string method, object? parameters)
     {
         EnqueueUi(() => { LastActionError = null; });

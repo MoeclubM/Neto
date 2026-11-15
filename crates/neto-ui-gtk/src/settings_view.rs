@@ -1,13 +1,58 @@
 #![cfg(target_os = "linux")]
 
+use crate::format::format_bytes;
 use adw::prelude::*;
 use gtk::prelude::*;
-use neto_core::{EngineSnapshot, NetoController, telemetry};
+use neto_core::{EngineSnapshot, NetoController, get_update_progress, telemetry};
 use serde_json::json;
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::runtime::Handle;
+
+#[derive(Clone, Default)]
+struct PendingLinuxUpdate {
+    latest_version: String,
+    download_url: String,
+    download_name: String,
+    release_url: String,
+}
+
+fn send_update_notification(title: &str, body: &str, percent: Option<u8>) {
+    let mut cmd = std::process::Command::new("notify-send");
+    cmd.args([
+        "-a",
+        "Neto",
+        "-h",
+        "string:x-canonical-private-synchronous:neto-update",
+    ]);
+    if let Some(pct) = percent {
+        cmd.args(["-h", &format!("int:value:{pct}")]);
+    }
+    cmd.args([title, body]);
+    if cmd.spawn().is_ok() {
+        return;
+    }
+    if let Some(app) = gtk::gio::Application::default() {
+        let notif = gtk::gio::Notification::new(title);
+        notif.set_body(Some(body));
+        app.send_notification(Some("neto-update"), &notif);
+    }
+}
+
+fn resolve_linux_download_path(file_name: &str) -> PathBuf {
+    let safe_name = std::path::Path::new(file_name)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "neto-update.deb".to_string());
+    let dir = std::env::var_os("XDG_DOWNLOAD_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Downloads")))
+        .unwrap_or_else(std::env::temp_dir);
+    dir.join(safe_name)
+}
 
 pub struct SettingsView {
     pub root: gtk::Stack,
@@ -26,9 +71,10 @@ pub struct SettingsView {
     logs_entry_row: adw::ActionRow,
     version_row: adw::ActionRow,
     check_update_btn: gtk::Button,
+    update_progress_row: adw::PreferencesRow,
     update_repo: Rc<RefCell<String>>,
     current_version: Rc<RefCell<String>>,
-    pending_update_url: Rc<RefCell<String>>,
+    pending_update: Rc<RefCell<Option<PendingLinuxUpdate>>>,
     log_level: Rc<RefCell<String>>,
     log_filter: Rc<RefCell<String>>,
     logs_buffer: gtk::TextBuffer,
@@ -124,7 +170,21 @@ impl SettingsView {
             .valign(gtk::Align::Center)
             .build();
         version_row.add_suffix(&check_update_btn);
+        let update_progress_bar = gtk::ProgressBar::builder()
+            .show_text(true)
+            .margin_top(8)
+            .margin_bottom(8)
+            .margin_start(14)
+            .margin_end(14)
+            .build();
+        let update_progress_row = adw::PreferencesRow::builder()
+            .activatable(false)
+            .focusable(false)
+            .visible(false)
+            .child(&update_progress_bar)
+            .build();
         about_group.add(&version_row);
+        about_group.add(&update_progress_row);
 
         main_page.add(&general_group);
         main_page.add(&adv_group);
@@ -341,18 +401,138 @@ impl SettingsView {
 
         let update_repo = Rc::new(RefCell::new("MoeclubM/Neto".to_string()));
         let current_version = Rc::new(RefCell::new(init_ver));
-        let pending_update_url = Rc::new(RefCell::new(String::new()));
+        let pending_update: Rc<RefCell<Option<PendingLinuxUpdate>>> = Rc::new(RefCell::new(None));
         if let Ok(rt_handle) = Handle::try_current() {
             let ctrl = controller.clone();
             let repo_ref = update_repo.clone();
             let ver_ref = current_version.clone();
-            let url_ref = pending_update_url.clone();
+            let pending_ref = pending_update.clone();
             let row_ref = version_row.clone();
             let btn_ref = check_update_btn.clone();
+            let prog_row_ref = update_progress_row.clone();
+            let prog_bar_ref = update_progress_bar.clone();
             check_update_btn.connect_clicked(move |btn| {
-                let cached = url_ref.borrow().clone();
-                if !cached.is_empty() {
-                    let _ = std::process::Command::new("xdg-open").arg(&cached).spawn();
+                if let Some(upd) = pending_ref.borrow().clone() {
+                    if upd.download_url.is_empty() {
+                        if !upd.release_url.is_empty() {
+                            let _ = std::process::Command::new("xdg-open")
+                                .arg(&upd.release_url)
+                                .spawn();
+                        }
+                        return;
+                    }
+                    let dest_path = resolve_linux_download_path(if upd.download_name.is_empty() {
+                        "neto-update.deb"
+                    } else {
+                        &upd.download_name
+                    });
+                    let dest_str = dest_path.to_string_lossy().into_owned();
+                    btn.set_sensitive(false);
+                    btn.set_label("下载中…");
+                    prog_bar_ref.set_fraction(0.0);
+                    prog_bar_ref.set_text(Some("正在连接下载源…"));
+                    prog_row_ref.set_visible(true);
+                    send_update_notification(
+                        "正在下载更新",
+                        &format!("正在下载 {} 安装包…", upd.latest_version),
+                        Some(0),
+                    );
+                    let ctrl_dl = ctrl.clone();
+                    let dl_url = upd.download_url.clone();
+                    let dest_for_task = dest_str.clone();
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    rt_handle.spawn(async move {
+                        let res = ctrl_dl
+                            .dispatch_json(
+                                "download_update",
+                                json!({
+                                    "url": dl_url,
+                                    "dest_path": dest_for_task,
+                                }),
+                            )
+                            .await
+                            .map_err(|e| format!("{e:#}"));
+                        let _ = tx.send(res);
+                    });
+                    let row_dl = row_ref.clone();
+                    let btn_dl = btn_ref.clone();
+                    let prog_row_dl = prog_row_ref.clone();
+                    let prog_bar_dl = prog_bar_ref.clone();
+                    let ver_dl = ver_ref.clone();
+                    let latest_ver = upd.latest_version.clone();
+                    let last_bucket = Rc::new(Cell::new(0u8));
+                    gtk::glib::timeout_add_local(
+                        std::time::Duration::from_millis(150),
+                        move || match rx.try_recv() {
+                            Ok(Ok(val)) => {
+                                btn_dl.set_sensitive(true);
+                                btn_dl.set_label("重新下载");
+                                let bytes = val.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+                                prog_bar_dl.set_fraction(1.0);
+                                prog_bar_dl.set_text(Some(&format!(
+                                    "下载完成 100% ({})",
+                                    format_bytes(bytes)
+                                )));
+                                row_dl.set_subtitle(&format!("已保存至 {dest_str}"));
+                                send_update_notification(
+                                    "更新下载完成",
+                                    &format!("{latest_ver} 已保存至 {dest_str}"),
+                                    Some(100),
+                                );
+                                let _ = std::process::Command::new("xdg-open")
+                                    .arg(&dest_str)
+                                    .spawn();
+                                gtk::glib::ControlFlow::Break
+                            }
+                            Ok(Err(err)) => {
+                                btn_dl.set_sensitive(true);
+                                btn_dl.set_label("重试下载");
+                                prog_row_dl.set_visible(false);
+                                let cur = ver_dl.borrow().clone();
+                                row_dl.set_subtitle(&format!("v{cur} · 下载失败：{err}"));
+                                send_update_notification("更新下载失败", &err, None);
+                                gtk::glib::ControlFlow::Break
+                            }
+                            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                                let prog = get_update_progress();
+                                if let Some(pct) = prog.percent
+                                    && prog.total_bytes > 0
+                                {
+                                    prog_bar_dl.set_fraction(f64::from(pct) / 100.0);
+                                    let line = format!(
+                                        "正在下载 {pct}% ({} / {})",
+                                        format_bytes(prog.downloaded_bytes),
+                                        format_bytes(prog.total_bytes)
+                                    );
+                                    prog_bar_dl.set_text(Some(&line));
+                                    let bucket = pct / 10;
+                                    if bucket > last_bucket.get() && pct < 100 {
+                                        last_bucket.set(bucket);
+                                        send_update_notification(
+                                            "正在下载更新",
+                                            &format!("{latest_ver} · {line}"),
+                                            Some(pct),
+                                        );
+                                    }
+                                } else if prog.downloaded_bytes > 0 {
+                                    prog_bar_dl.pulse();
+                                    prog_bar_dl.set_text(Some(&format!(
+                                        "已下载 {}",
+                                        format_bytes(prog.downloaded_bytes)
+                                    )));
+                                } else {
+                                    prog_bar_dl.pulse();
+                                }
+                                gtk::glib::ControlFlow::Continue
+                            }
+                            Err(_) => {
+                                btn_dl.set_sensitive(true);
+                                btn_dl.set_label("下载更新");
+                                prog_row_dl.set_visible(false);
+                                gtk::glib::ControlFlow::Break
+                            }
+                        },
+                    );
                     return;
                 }
                 let repo = repo_ref.borrow().clone();
@@ -362,6 +542,14 @@ impl SettingsView {
                 }
                 btn.set_sensitive(false);
                 btn.set_label("检查中…");
+                prog_bar_ref.set_fraction(0.0);
+                prog_bar_ref.set_text(Some("正在检查更新…"));
+                prog_row_ref.set_visible(true);
+                send_update_notification(
+                    "检查更新",
+                    &format!("正在检查更新（当前 v{cur_ver}）…"),
+                    None,
+                );
                 let ctrl = ctrl.clone();
                 let (tx, rx) = std::sync::mpsc::channel();
                 rt_handle.spawn(async move {
@@ -380,13 +568,16 @@ impl SettingsView {
                 });
                 let row_c = row_ref.clone();
                 let btn_c = btn_ref.clone();
-                let url_c = url_ref.clone();
+                let pending_c = pending_ref.clone();
                 let ver_c = ver_ref.clone();
+                let prog_row_c = prog_row_ref.clone();
+                let prog_bar_c = prog_bar_ref.clone();
                 gtk::glib::timeout_add_local(
                     std::time::Duration::from_millis(80),
                     move || match rx.try_recv() {
                         Ok(Ok(val)) => {
                             btn_c.set_sensitive(true);
+                            prog_row_c.set_visible(false);
                             let has_upd = val
                                 .get("has_update")
                                 .and_then(|v| v.as_bool())
@@ -400,32 +591,59 @@ impl SettingsView {
                                 let dl = val
                                     .get("download_url")
                                     .and_then(|v| v.as_str())
-                                    .filter(|s| !s.is_empty())
-                                    .or_else(|| val.get("release_url").and_then(|v| v.as_str()))
                                     .unwrap_or("")
                                     .to_string();
-                                *url_c.borrow_mut() = dl;
+                                let dl_name = val
+                                    .get("download_name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let rel_url = val
+                                    .get("release_url")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                *pending_c.borrow_mut() = Some(PendingLinuxUpdate {
+                                    latest_version: latest.to_string(),
+                                    download_url: dl,
+                                    download_name: dl_name,
+                                    release_url: rel_url,
+                                });
                                 row_c.set_subtitle(&format!("v{cur} · 发现新版本 {latest}"));
                                 btn_c.set_label("下载更新");
                                 btn_c.add_css_class("suggested-action");
+                                send_update_notification(
+                                    "发现新版本",
+                                    &format!("检测到新版本 {latest}，可立即下载更新。"),
+                                    None,
+                                );
                             } else {
                                 row_c.set_subtitle(&format!("v{cur} · 已是最新版本"));
                                 btn_c.set_label("检查更新");
+                                send_update_notification(
+                                    "检查更新",
+                                    &format!("当前已是最新版本（v{cur}）。"),
+                                    None,
+                                );
                             }
                             gtk::glib::ControlFlow::Break
                         }
                         Ok(Err(err)) => {
                             btn_c.set_sensitive(true);
+                            prog_row_c.set_visible(false);
                             btn_c.set_label("检查更新");
                             let cur = ver_c.borrow().clone();
                             row_c.set_subtitle(&format!("v{cur} · {err}"));
+                            send_update_notification("检查更新失败", &err, None);
                             gtk::glib::ControlFlow::Break
                         }
                         Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            prog_bar_c.pulse();
                             gtk::glib::ControlFlow::Continue
                         }
                         Err(_) => {
                             btn_c.set_sensitive(true);
+                            prog_row_c.set_visible(false);
                             btn_c.set_label("检查更新");
                             gtk::glib::ControlFlow::Break
                         }
@@ -451,9 +669,10 @@ impl SettingsView {
             logs_entry_row,
             version_row,
             check_update_btn,
+            update_progress_row,
             update_repo,
             current_version,
-            pending_update_url,
+            pending_update,
             log_level,
             log_filter,
             logs_buffer,
@@ -475,7 +694,8 @@ impl SettingsView {
             *self.current_version.borrow_mut() = trimmed_ver.to_string();
             self.version_row.set_subtitle(&format!("v{trimmed_ver}"));
         }
-        *self.pending_update_url.borrow_mut() = String::new();
+        *self.pending_update.borrow_mut() = None;
+        self.update_progress_row.set_visible(false);
         self.check_update_btn.set_label("检查更新");
         self.check_update_btn.remove_css_class("suggested-action");
     }

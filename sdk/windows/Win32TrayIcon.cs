@@ -18,6 +18,9 @@ public sealed class Win32TrayIcon : IDisposable
     private const uint NIF_MESSAGE = 0x00000001;
     private const uint NIF_ICON = 0x00000002;
     private const uint NIF_TIP = 0x00000004;
+    private const uint NIF_INFO = 0x00000010;
+    private const uint NIIF_INFO = 0x00000001;
+    private const uint NIIF_NOSOUND = 0x00000010;
     private const uint MF_STRING = 0x00000000;
     private const uint MF_GRAYED = 0x00000001;
     private const uint MF_DISABLED = 0x00000002;
@@ -84,6 +87,8 @@ public sealed class Win32TrayIcon : IDisposable
             uCallbackMessage = WM_TRAYICON,
             hIcon = _ownedIcon != IntPtr.Zero ? _ownedIcon : LoadIconW(IntPtr.Zero, IDI_APPLICATION),
             szTip = TruncateTip(tooltip),
+            szInfo = "",
+            szInfoTitle = "",
         };
         Shell_NotifyIconW(NIM_ADD, ref _nid);
     }
@@ -137,6 +142,18 @@ public sealed class Win32TrayIcon : IDisposable
         _nid.szTip = TruncateTip(tooltip);
         _nid.uFlags = NIF_TIP;
         Shell_NotifyIconW(NIM_MODIFY, ref _nid);
+    }
+
+    public void ShowNotification(string title, string message, bool silent = false)
+    {
+        if (_disposed || string.IsNullOrWhiteSpace(message)) return;
+        _nid.szInfoTitle = TruncateText(string.IsNullOrWhiteSpace(title) ? "Neto" : title.Trim(), 60);
+        _nid.szInfo = TruncateText(message.Trim(), 250);
+        _nid.dwInfoFlags = NIIF_INFO | (silent ? NIIF_NOSOUND : 0u);
+        _nid.uFlags = NIF_INFO;
+        Shell_NotifyIconW(NIM_MODIFY, ref _nid);
+        _nid.szInfoTitle = "";
+        _nid.szInfo = "";
     }
 
     private IntPtr SubclassWndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
@@ -279,6 +296,9 @@ public sealed class Win32TrayIcon : IDisposable
     private static string TruncateTip(string text) =>
         text.Length > 120 ? text[..120] : text;
 
+    private static string TruncateText(string text, int maxLen) =>
+        text.Length > maxLen ? text[..maxLen] : text;
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -305,6 +325,16 @@ public sealed class Win32TrayIcon : IDisposable
         public IntPtr hIcon;
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
         public string szTip;
+        public uint dwState;
+        public uint dwStateMask;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+        public string szInfo;
+        public uint uTimeoutOrVersion;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
+        public string szInfoTitle;
+        public uint dwInfoFlags;
+        public Guid guidItem;
+        public IntPtr hBalloonIcon;
     }
 
     [StructLayout(LayoutKind.Sequential)]

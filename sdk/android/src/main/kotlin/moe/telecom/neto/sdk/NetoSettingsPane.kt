@@ -1,10 +1,13 @@
 package moe.telecom.neto.sdk
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -15,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -24,12 +28,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
@@ -51,8 +57,10 @@ fun NetoSettingsPane(
     installedApps: List<InstalledAppEntry>,
     client: NetoControllerClient,
     modifier: Modifier = Modifier,
+    appTitle: String = "Neto",
     updateRepo: String = "",
     appVersion: String = "",
+    onInstallApk: ((Context, File) -> Unit)? = null,
     extraHeaderSlot: (@Composable () -> Unit)? = null,
     generalExtraSlot: (@Composable () -> Unit)? = null,
     extraFooterSlot: (@Composable () -> Unit)? = null,
@@ -64,6 +72,9 @@ fun NetoSettingsPane(
     var checkingUpdate by remember { mutableStateOf(false) }
     var pendingUpdate by remember { mutableStateOf<NetoUpdateCheckResult?>(null) }
     var showUpdateDialog by remember { mutableStateOf(false) }
+    var downloadingUpdate by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableStateOf<NetoUpdateProgress?>(null) }
+    var downloadError by remember { mutableStateOf<String?>(null) }
 
     BackHandler(enabled = subpage != "root") {
         subpage = "root"
@@ -230,20 +241,46 @@ fun NetoSettingsPane(
                     NetoPreferenceCard {
                         ArrowPreference(
                             title = "检查更新",
-                            summary = if (checkingUpdate) "正在检查…" else "当前版本 v${appVersion.removePrefix("v")}",
+                            summary = when {
+                                checkingUpdate -> "正在检查更新…"
+                                downloadingUpdate -> {
+                                    val pct = downloadProgress?.percent
+                                    if (pct != null) "正在下载更新… $pct%" else "正在下载更新…"
+                                }
+                                pendingUpdate?.hasUpdate == true -> "发现新版本 ${pendingUpdate!!.latestVersion}"
+                                else -> "当前版本 v${appVersion.removePrefix("v")}"
+                            },
                             onClick = {
-                                if (checkingUpdate) return@ArrowPreference
+                                if (checkingUpdate || downloadingUpdate) {
+                                    if (downloadingUpdate) showUpdateDialog = true
+                                    return@ArrowPreference
+                                }
+                                if (pendingUpdate?.hasUpdate == true) {
+                                    downloadError = null
+                                    showUpdateDialog = true
+                                    return@ArrowPreference
+                                }
                                 checkingUpdate = true
+                                NetoUpdateNotifier.notifyChecking(context, appTitle, appVersion)
                                 scope.launch {
                                     try {
                                         val res = client.checkUpdate(updateRepo, appVersion)
+                                        NetoUpdateNotifier.notifyCheckResult(
+                                            context = context,
+                                            appTitle = appTitle,
+                                            hasUpdate = res.hasUpdate,
+                                            latestVersion = res.latestVersion,
+                                            currentVersion = appVersion,
+                                        )
                                         if (res.hasUpdate) {
                                             pendingUpdate = res
+                                            downloadError = null
                                             showUpdateDialog = true
                                         } else {
                                             Toast.makeText(context, "已是最新版本", Toast.LENGTH_SHORT).show()
                                         }
                                     } catch (err: Throwable) {
+                                        NetoUpdateNotifier.notifyError(context, appTitle, err.message ?: "检查更新失败")
                                         Toast.makeText(context, "检查更新失败：${err.message}", Toast.LENGTH_SHORT).show()
                                     } finally {
                                         checkingUpdate = false
@@ -275,26 +312,87 @@ fun NetoSettingsPane(
                     append(updateInfo.releaseNotes)
                 }
             },
-            onDismissRequest = { showUpdateDialog = false },
+            onDismissRequest = { if (!downloadingUpdate) showUpdateDialog = false },
         ) {
+            if (downloadingUpdate || downloadError != null) {
+                val prog = downloadProgress
+                val pct = prog?.percent
+                if (downloadingUpdate) {
+                    val frac = ((pct ?: 8).coerceIn(4, 100)) / 100f
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(MiuixTheme.colorScheme.outline.copy(alpha = 0.2f)),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(frac)
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(MiuixTheme.colorScheme.primary),
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    val statusLine = if (pct != null && (prog.totalBytes > 0L)) {
+                        "正在下载安装包… $pct% (${formatNetoBytes(prog.downloadedBytes)} / ${formatNetoBytes(prog.totalBytes)})"
+                    } else if ((prog?.downloadedBytes ?: 0L) > 0L) {
+                        "正在下载安装包… 已下载 ${formatNetoBytes(prog!!.downloadedBytes)}"
+                    } else {
+                        "正在连接下载源…"
+                    }
+                    Text(statusLine, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                    Spacer(Modifier.height(12.dp))
+                } else if (downloadError != null) {
+                    Text("下载失败：$downloadError", style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.error)
+                    Spacer(Modifier.height(12.dp))
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 TextButton(
-                    text = "稍后",
+                    text = if (downloadingUpdate) "后台下载" else "稍后",
                     onClick = { showUpdateDialog = false },
                     modifier = Modifier.weight(1f),
                 )
                 TextButton(
-                    text = "下载更新",
+                    text = if (downloadingUpdate) "下载中…" else if (onInstallApk != null && updateInfo.downloadUrl.endsWith(".apk", ignoreCase = true)) "下载并安装" else "下载更新",
                     onClick = {
-                        showUpdateDialog = false
+                        if (downloadingUpdate) return@TextButton
                         val target = updateInfo.downloadUrl.ifBlank { updateInfo.releaseUrl }
-                        if (target.isNotBlank()) {
+                        if (onInstallApk != null && target.endsWith(".apk", ignoreCase = true)) {
+                            downloadingUpdate = true
+                            downloadError = null
+                            scope.launch {
+                                try {
+                                    val dir = File(context.cacheDir, "apk-updates").apply { mkdirs() }
+                                    val apkFile = File(dir, "update.apk")
+                                    NetoUpdateNotifier.downloadWithNotifications(
+                                        context = context,
+                                        client = client,
+                                        appTitle = appTitle,
+                                        version = updateInfo.latestVersion,
+                                        url = target,
+                                        targetFile = apkFile,
+                                        onProgress = { snap -> downloadProgress = snap },
+                                    )
+                                    showUpdateDialog = false
+                                    onInstallApk(context, apkFile)
+                                } catch (err: Throwable) {
+                                    downloadError = err.message ?: "下载失败"
+                                } finally {
+                                    downloadingUpdate = false
+                                }
+                            }
+                        } else if (target.isNotBlank()) {
+                            showUpdateDialog = false
                             runCatching {
                                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                             }
                         }
                     },
                     modifier = Modifier.weight(1f),
+                    enabled = !downloadingUpdate,
                     colors = ButtonDefaults.textButtonColorsPrimary(),
                 )
             }

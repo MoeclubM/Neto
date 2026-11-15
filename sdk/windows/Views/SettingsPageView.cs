@@ -52,11 +52,14 @@ public sealed class SettingsPageView
     private readonly StackPanel _updateBadgeHost;
     private readonly TextBlock _updateFeedbackText;
     private readonly Button _checkUpdateBtn;
+    private readonly ProgressBar _checkProgressBar;
     private readonly StackPanel _extraFooterHost;
     private string _updateRepo = "MoeclubM/Neto";
     private string _currentVersion = NetoWindowHelper.GetAppVersion();
     private Func<XamlRoot?>? _xamlRootProvider;
     private Action? _onQuitForInstaller;
+    private Action<string, string, bool>? _onNotify;
+    private Action<string>? _onStatusTooltip;
     private NetoUpdateCheckResult? _cachedUpdate;
     private bool _checkingUpdate;
     private bool _updating;
@@ -262,7 +265,16 @@ public sealed class SettingsPageView
         Grid.SetColumn(versionRight, 1);
         versionGrid.Children.Add(versionLeft);
         versionGrid.Children.Add(versionRight);
-        _rootPane.Children.Add(NetoUiFactory.CreateCard(versionGrid));
+        _checkProgressBar = new ProgressBar
+        {
+            IsIndeterminate = true,
+            Visibility = Visibility.Collapsed,
+            Margin = new Thickness(0, 6, 0, 0),
+        };
+        var versionCardStack = new StackPanel { Spacing = 2 };
+        versionCardStack.Children.Add(versionGrid);
+        versionCardStack.Children.Add(_checkProgressBar);
+        _rootPane.Children.Add(NetoUiFactory.CreateCard(versionCardStack));
 
         _extraFooterHost = new StackPanel { Spacing = 10 };
         _rootPane.Children.Add(_extraFooterHost);
@@ -486,12 +498,16 @@ public sealed class SettingsPageView
         string repoSlug,
         string currentVersion,
         Func<XamlRoot?> xamlRootProvider,
-        Action? onQuitForInstaller = null)
+        Action? onQuitForInstaller = null,
+        Action<string, string, bool>? onNotify = null,
+        Action<string>? onStatusTooltip = null)
     {
         if (!string.IsNullOrWhiteSpace(repoSlug)) _updateRepo = repoSlug.Trim();
         if (!string.IsNullOrWhiteSpace(currentVersion)) _currentVersion = currentVersion.Trim().TrimStart('v', 'V');
         _xamlRootProvider = xamlRootProvider;
         _onQuitForInstaller = onQuitForInstaller;
+        _onNotify = onNotify;
+        _onStatusTooltip = onStatusTooltip;
         _versionSubtitleText.Text = $"v{_currentVersion}";
     }
 
@@ -509,6 +525,9 @@ public sealed class SettingsPageView
         {
             _checkUpdateBtn.Content = "检查中…";
             _updateFeedbackText.Visibility = Visibility.Collapsed;
+            _checkProgressBar.IsIndeterminate = true;
+            _checkProgressBar.Visibility = Visibility.Visible;
+            _onNotify?.Invoke("检查更新", $"正在检查更新（当前 v{_currentVersion}）…", true);
         }
         try
         {
@@ -522,6 +541,7 @@ public sealed class SettingsPageView
                     Color.FromArgb(255, 42, 168, 118)));
                 _checkUpdateBtn.Content = "查看更新";
                 NetoUiFactory.ApplyPrimaryButton(_checkUpdateBtn, true);
+                _onNotify?.Invoke("发现新版本", $"检测到新版本 {res.LatestVersion}，可立即下载更新。", !manual);
                 if (manual)
                 {
                     await ShowUpdateDialogAsync(res);
@@ -536,6 +556,7 @@ public sealed class SettingsPageView
                     _updateFeedbackText.Foreground = new SolidColorBrush(Color.FromArgb(255, 42, 168, 118));
                     _updateFeedbackText.Text = "已是最新版本";
                     _updateFeedbackText.Visibility = Visibility.Visible;
+                    _onNotify?.Invoke("检查更新", $"当前已是最新版本（v{_currentVersion}）。", true);
                     _ = Task.Run(async () =>
                     {
                         await Task.Delay(2500);
@@ -558,12 +579,14 @@ public sealed class SettingsPageView
                 _updateFeedbackText.Foreground = new SolidColorBrush(Color.FromArgb(255, 216, 82, 76));
                 _updateFeedbackText.Text = ex.Message;
                 _updateFeedbackText.Visibility = Visibility.Visible;
+                _onNotify?.Invoke("检查更新失败", ex.Message, false);
             }
         }
         finally
         {
             _checkingUpdate = false;
             _checkUpdateBtn.IsEnabled = true;
+            _checkProgressBar.Visibility = Visibility.Collapsed;
         }
     }
 
@@ -635,10 +658,14 @@ public sealed class SettingsPageView
             args.Cancel = true;
             sender.IsPrimaryButtonEnabled = false;
             sender.IsSecondaryButtonEnabled = false;
+            progressBar.IsIndeterminate = true;
+            progressBar.Minimum = 0;
+            progressBar.Maximum = 100;
             progressBar.Visibility = Visibility.Visible;
             statusText.Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray);
-            statusText.Text = "正在下载安装包…";
+            statusText.Text = "正在连接下载源…";
             statusText.Visibility = Visibility.Visible;
+            _onNotify?.Invoke("正在下载更新", $"开始下载 {info.LatestVersion} 安装包…", true);
 
             var fileName = string.IsNullOrWhiteSpace(info.InstallerName)
                 ? $"update-{info.LatestVersion}-setup.exe"
@@ -646,7 +673,38 @@ public sealed class SettingsPageView
             var destPath = Path.Combine(Path.GetTempPath(), "NetoUpdates", fileName);
             try
             {
-                var dl = await _client.DownloadUpdateAsync(info.InstallerUrl, destPath);
+                var downloadTask = _client.DownloadUpdateAsync(info.InstallerUrl, destPath);
+                while (!downloadTask.IsCompleted)
+                {
+                    var finished = await Task.WhenAny(downloadTask, Task.Delay(150));
+                    if (finished == downloadTask) break;
+                    try
+                    {
+                        var prog = await _client.GetUpdateProgressAsync();
+                        if (prog.Percent.HasValue && prog.TotalBytes > 0)
+                        {
+                            progressBar.IsIndeterminate = false;
+                            progressBar.Value = prog.Percent.Value;
+                            var progressLine = $"正在下载安装包… {prog.Percent.Value}% ({NetoFormat.FormatBytes(prog.DownloadedBytes)} / {NetoFormat.FormatBytes(prog.TotalBytes)})";
+                            statusText.Text = progressLine;
+                            _onStatusTooltip?.Invoke($"正在下载更新 {info.LatestVersion} · {prog.Percent.Value}%");
+                        }
+                        else if (prog.DownloadedBytes > 0)
+                        {
+                            progressBar.IsIndeterminate = true;
+                            statusText.Text = $"正在下载安装包… 已下载 {NetoFormat.FormatBytes(prog.DownloadedBytes)}";
+                        }
+                    }
+                    catch
+                    {
+                        // Ignore transient progress poll error while download continues.
+                    }
+                }
+                var dl = await downloadTask;
+                progressBar.IsIndeterminate = false;
+                progressBar.Value = 100;
+                statusText.Text = $"下载完成（{NetoFormat.FormatBytes(dl.Bytes)}），正在启动安装程序…";
+                _onNotify?.Invoke("更新下载完成", $"已下载 {info.LatestVersion}，正在启动安装程序…", true);
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = dl.Path,
@@ -660,6 +718,7 @@ public sealed class SettingsPageView
                 progressBar.Visibility = Visibility.Collapsed;
                 statusText.Foreground = new SolidColorBrush(Color.FromArgb(255, 216, 82, 76));
                 statusText.Text = $"下载失败：{ex.Message}";
+                _onNotify?.Invoke("更新下载失败", ex.Message, false);
                 sender.IsPrimaryButtonEnabled = true;
                 sender.IsSecondaryButtonEnabled = true;
             }

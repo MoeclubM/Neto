@@ -1956,12 +1956,18 @@ mod tests {
         assert_eq!(manual_cfg.options.channel_max_mbps, 40);
         assert_eq!(manual_cfg.channels.len(), 3);
         assert_eq!(manual_cfg.channels[0].security, FluxSecurityMode::Obfs);
-        assert_eq!(manual_cfg.channels[0].public_key.as_deref(), Some(tcp_pub.as_str()));
+        assert_eq!(
+            manual_cfg.channels[0].public_key.as_deref(),
+            Some(tcp_pub.as_str())
+        );
         assert_eq!(manual_cfg.channels[1].security, FluxSecurityMode::Tls);
         assert!(!manual_cfg.channels[1].tls_binding);
         assert_eq!(manual_cfg.channels[1].http_path, "/flux-ws");
         assert_eq!(manual_cfg.channels[2].security, FluxSecurityMode::Obfs);
-        assert_eq!(manual_cfg.channels[2].public_key.as_deref(), Some(udp_pub.as_str()));
+        assert_eq!(
+            manual_cfg.channels[2].public_key.as_deref(),
+            Some(udp_pub.as_str())
+        );
         assert_eq!(
             manual_cfg.channels[2].role,
             aerion::FluxChannelRole::UdpRelay

@@ -321,6 +321,33 @@ class NetoControllerClient(
         )
     }
 
+    suspend fun downloadUpdate(url: String, destPath: String): NetoDownloadUpdateResult = withContext(Dispatchers.IO) {
+        val obj = NetoBridge.call(
+            "download_update",
+            JSONObject()
+                .put("url", url)
+                .put("dest_path", destPath),
+        ).getJSONObject("result")
+        NetoDownloadUpdateResult(
+            path = obj.optString("path", destPath),
+            bytes = obj.optLong("bytes", 0L),
+        )
+    }
+
+    suspend fun getUpdateProgress(): NetoUpdateProgress = withContext(Dispatchers.IO) {
+        runCatching {
+            val obj = NetoBridge.call("update_progress").getJSONObject("result")
+            NetoUpdateProgress(
+                phase = obj.optString("phase", "idle"),
+                version = obj.optString("version", ""),
+                downloadedBytes = obj.optLong("downloaded_bytes", 0L),
+                totalBytes = obj.optLong("total_bytes", 0L),
+                percent = if (obj.isNull("percent")) null else obj.optInt("percent", -1).takeIf { it in 0..100 },
+                message = obj.optString("message", ""),
+            )
+        }.getOrDefault(NetoUpdateProgress())
+    }
+
     fun setRoutingMode(mode: String) {
         val wasConnected = _snapshot.value.connection.connected
         scope.launch(Dispatchers.IO) {

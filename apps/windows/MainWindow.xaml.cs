@@ -58,11 +58,6 @@ public sealed partial class MainWindow : Window
         _rulesView = new RulesPageView(_client, detachHeaderActions: true, ownerHwnd: _hwnd);
         _profilesView = new ProfilesPageView(_client, _hwnd);
         _settingsView = new SettingsPageView(_client, ApplyThemeMode);
-        _settingsView.ConfigureUpdater(
-            "MoeclubM/Neto",
-            NetoWindowHelper.GetAppVersion(),
-            () => RootGrid.XamlRoot,
-            ExitApplication);
 
         NavProfilesItem.Tapped += (_, _) => _profilesView.ResetToRoot();
         NavSettingsItem.Tapped += (_, _) => _settingsView.ResetToRoot();
@@ -75,6 +70,13 @@ public sealed partial class MainWindow : Window
         ContentHost.Children.Add(_settingsView.Root);
 
         _tray = new Win32TrayIcon(_hwnd, "Neto");
+        _settingsView.ConfigureUpdater(
+            "MoeclubM/Neto",
+            NetoWindowHelper.GetAppVersion(),
+            () => RootGrid.XamlRoot,
+            ExitApplication,
+            (title, message, silent) => _tray.ShowNotification(title, message, silent),
+            tooltip => _tray.UpdateTooltip(tooltip));
         _tray.ShowRequested += ShowFromExternalActivation;
         _tray.PrimaryClickRequested += () => DispatcherQueue.TryEnqueue(() =>
         {

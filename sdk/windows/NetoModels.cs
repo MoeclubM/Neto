@@ -251,6 +251,16 @@ public sealed class NetoDownloadUpdateResult
     [JsonPropertyName("bytes")] public ulong Bytes { get; set; }
 }
 
+public sealed class NetoUpdateProgress
+{
+    [JsonPropertyName("phase")] public string Phase { get; set; } = "idle";
+    [JsonPropertyName("version")] public string Version { get; set; } = "";
+    [JsonPropertyName("downloaded_bytes")] public ulong DownloadedBytes { get; set; }
+    [JsonPropertyName("total_bytes")] public ulong TotalBytes { get; set; }
+    [JsonPropertyName("percent")] public byte? Percent { get; set; }
+    [JsonPropertyName("message")] public string Message { get; set; } = "";
+}
+
 public static class NetoFormat
 {
     public static string FormatBytes(ulong bytes)

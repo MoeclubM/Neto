@@ -196,6 +196,20 @@ data class NetoUpdateCheckResult(
     val downloadName: String = "",
 )
 
+data class NetoDownloadUpdateResult(
+    val path: String = "",
+    val bytes: Long = 0L,
+)
+
+data class NetoUpdateProgress(
+    val phase: String = "idle",
+    val version: String = "",
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long = 0L,
+    val percent: Int? = null,
+    val message: String = "",
+)
+
 data class NetoTelemetry(
     val uploadBytes: Long = 0L,
     val downloadBytes: Long = 0L,

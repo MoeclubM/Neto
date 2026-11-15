@@ -44,5 +44,6 @@ pub use state::{
 };
 pub use telemetry::{LogEntry, TelemetrySnapshot};
 pub use updater::{
-    DownloadUpdateResult, UpdateCheckResult, check_github_release, download_release_asset,
+    DownloadUpdateResult, UpdateCheckResult, UpdateProgressSnapshot, check_github_release,
+    download_release_asset, get_update_progress,
 };

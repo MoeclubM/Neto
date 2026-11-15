@@ -2147,6 +2147,7 @@ impl NetoController {
                 .await?;
                 Ok(serde_json::to_value(out)?)
             }
+            "update_progress" => Ok(serde_json::to_value(updater::get_update_progress())?),
             other => Err(anyhow!("unknown Neto method: {other}")),
         }
     }

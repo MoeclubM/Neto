@@ -1,11 +1,55 @@
 use crate::doh::SHARED_HTTP_CLIENT;
 use anyhow::{Context, Result, anyhow, bail, ensure};
+use once_cell::sync::Lazy;
 use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateProgressSnapshot {
+    pub phase: String,
+    pub version: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub percent: Option<u8>,
+    pub message: String,
+}
+
+static UPDATE_PROGRESS: Lazy<Mutex<UpdateProgressSnapshot>> = Lazy::new(|| {
+    Mutex::new(UpdateProgressSnapshot {
+        phase: "idle".to_string(),
+        ..Default::default()
+    })
+});
+
+pub fn get_update_progress() -> UpdateProgressSnapshot {
+    UPDATE_PROGRESS
+        .lock()
+        .expect("update progress lock poisoned")
+        .clone()
+}
+
+fn set_update_progress(
+    phase: &str,
+    version: impl Into<String>,
+    downloaded_bytes: u64,
+    total_bytes: u64,
+    percent: Option<u8>,
+    message: impl Into<String>,
+) {
+    let mut guard = UPDATE_PROGRESS
+        .lock()
+        .expect("update progress lock poisoned");
+    guard.phase = phase.to_string();
+    guard.version = version.into();
+    guard.downloaded_bytes = downloaded_bytes;
+    guard.total_bytes = total_bytes;
+    guard.percent = percent;
+    guard.message = message.into();
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateCheckResult {
@@ -336,55 +380,88 @@ pub async fn check_github_release(
     local_proxy_port: Option<u16>,
     user_agent: &str,
 ) -> Result<UpdateCheckResult> {
-    let slug = normalize_repo_slug(repo)?;
-    let api_url = format!("https://api.github.com/repos/{slug}/releases/latest");
-    let resp = get_with_fallback(
-        &api_url,
-        local_proxy_port,
-        user_agent,
-        "application/vnd.github+json",
-        10,
-        25,
-    )
-    .await
-    .with_context(|| format!("检查更新失败 ({slug})"))?;
+    set_update_progress("checking", "", 0, 0, None, "正在检查更新…");
+    let result =
+        async {
+            let slug = normalize_repo_slug(repo)?;
+            let api_url = format!("https://api.github.com/repos/{slug}/releases/latest");
+            let resp = get_with_fallback(
+                &api_url,
+                local_proxy_port,
+                user_agent,
+                "application/vnd.github+json",
+                10,
+                25,
+            )
+            .await
+            .with_context(|| format!("检查更新失败 ({slug})"))?;
 
-    let release: GithubRelease = resp.json().await.context("解析 GitHub Release 响应失败")?;
-    let latest_version = release.tag_name.trim().to_string();
-    if latest_version.is_empty() {
-        bail!("GitHub Release 缺少版本号");
+            let release: GithubRelease =
+                resp.json().await.context("解析 GitHub Release 响应失败")?;
+            let latest_version = release.tag_name.trim().to_string();
+            if latest_version.is_empty() {
+                bail!("GitHub Release 缺少版本号");
+            }
+
+            let plat = platform
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(std::env::consts::OS);
+            let target_arch = arch
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(std::env::consts::ARCH);
+
+            let has_update = is_newer_version(current_version, &latest_version);
+            let (
+                download_url,
+                download_name,
+                installer_url,
+                installer_name,
+                archive_url,
+                archive_name,
+            ) = select_platform_assets(&release.assets, plat, target_arch, prefer_installer);
+            let release_url = if release.html_url.trim().is_empty() {
+                format!("https://github.com/{slug}/releases/latest")
+            } else {
+                release.html_url
+            };
+
+            Ok(UpdateCheckResult {
+                current_version: current_version.trim().to_string(),
+                latest_version,
+                has_update,
+                release_url,
+                release_notes: release.body.unwrap_or_default().trim().to_string(),
+                published_at: release.published_at.unwrap_or_default(),
+                download_url,
+                download_name,
+                installer_url,
+                installer_name,
+                archive_url,
+                archive_name,
+            })
+        }
+        .await;
+
+    match &result {
+        Ok(info) if info.has_update => set_update_progress(
+            "available",
+            &info.latest_version,
+            0,
+            0,
+            None,
+            format!("发现新版本 {}", info.latest_version),
+        ),
+        Ok(info) => set_update_progress(
+            "up_to_date",
+            &info.latest_version,
+            0,
+            0,
+            None,
+            "已是最新版本",
+        ),
+        Err(err) => set_update_progress("error", "", 0, 0, None, format!("{err:#}")),
     }
-
-    let plat = platform
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or(std::env::consts::OS);
-    let target_arch = arch
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or(std::env::consts::ARCH);
-
-    let has_update = is_newer_version(current_version, &latest_version);
-    let (download_url, download_name, installer_url, installer_name, archive_url, archive_name) =
-        select_platform_assets(&release.assets, plat, target_arch, prefer_installer);
-    let release_url = if release.html_url.trim().is_empty() {
-        format!("https://github.com/{slug}/releases/latest")
-    } else {
-        release.html_url
-    };
-
-    Ok(UpdateCheckResult {
-        current_version: current_version.trim().to_string(),
-        latest_version,
-        has_update,
-        release_url,
-        release_notes: release.body.unwrap_or_default().trim().to_string(),
-        published_at: release.published_at.unwrap_or_default(),
-        download_url,
-        download_name,
-        installer_url,
-        installer_name,
-        archive_url,
-        archive_name,
-    })
+    result
 }
 
 pub async fn download_release_asset(
@@ -393,58 +470,108 @@ pub async fn download_release_asset(
     local_proxy_port: Option<u16>,
     user_agent: &str,
 ) -> Result<DownloadUpdateResult> {
+    let prev_version = get_update_progress().version;
+    set_update_progress("downloading", &prev_version, 0, 0, None, "正在连接下载源…");
     let trimmed_url = url.trim();
     let trimmed_dest = dest_path.trim();
-    ensure!(!trimmed_url.is_empty(), "下载地址为空");
-    ensure!(!trimmed_dest.is_empty(), "保存路径为空");
-
-    let dest = Path::new(trimmed_dest);
-    if let Some(parent) = dest.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .context("创建更新缓存目录失败")?;
-    }
-
     let part_path = format!("{trimmed_dest}.part");
-    let mut resp = get_with_fallback(
-        trimmed_url,
-        local_proxy_port,
-        user_agent,
-        "application/octet-stream",
-        15,
-        300,
-    )
-    .await
-    .context("下载更新安装包失败")?;
 
-    let mut file = tokio::fs::File::create(&part_path)
+    let result: Result<DownloadUpdateResult> = async {
+        ensure!(!trimmed_url.is_empty(), "下载地址为空");
+        ensure!(!trimmed_dest.is_empty(), "保存路径为空");
+
+        let dest = Path::new(trimmed_dest);
+        if let Some(parent) = dest.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .context("创建更新缓存目录失败")?;
+        }
+
+        let mut resp = get_with_fallback(
+            trimmed_url,
+            local_proxy_port,
+            user_agent,
+            "application/octet-stream",
+            15,
+            300,
+        )
         .await
-        .context("创建临时安装包文件失败")?;
-    let mut total_bytes = 0u64;
-    while let Some(chunk) = resp.chunk().await.context("读取更新安装包数据失败")? {
-        file.write_all(&chunk).await.context("写入更新安装包失败")?;
-        total_bytes = total_bytes.saturating_add(chunk.len() as u64);
-    }
-    file.flush().await?;
-    drop(file);
+        .context("下载更新安装包失败")?;
 
-    if total_bytes == 0 {
-        let _ = tokio::fs::remove_file(&part_path).await;
-        bail!("下载的安装包为空");
-    }
-    if tokio::fs::try_exists(dest).await.unwrap_or(false) {
-        let _ = tokio::fs::remove_file(dest).await;
-    }
-    tokio::fs::rename(&part_path, dest)
-        .await
-        .context("保存更新安装包失败")?;
+        let expected_total = resp.content_length().unwrap_or(0);
+        set_update_progress(
+            "downloading",
+            &prev_version,
+            0,
+            expected_total,
+            (expected_total > 0).then_some(0),
+            "正在下载更新安装包…",
+        );
 
-    Ok(DownloadUpdateResult {
-        path: trimmed_dest.to_string(),
-        bytes: total_bytes,
-    })
+        let mut file = tokio::fs::File::create(&part_path)
+            .await
+            .context("创建临时安装包文件失败")?;
+        let mut downloaded_bytes = 0u64;
+        let mut last_reported_bytes = 0u64;
+        while let Some(chunk) = resp.chunk().await.context("读取更新安装包数据失败")? {
+            file.write_all(&chunk).await.context("写入更新安装包失败")?;
+            downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
+            if downloaded_bytes.saturating_sub(last_reported_bytes) >= 32 * 1024
+                || (expected_total > 0 && downloaded_bytes >= expected_total)
+            {
+                last_reported_bytes = downloaded_bytes;
+                let pct = if expected_total > 0 {
+                    Some(((downloaded_bytes.saturating_mul(100)) / expected_total).min(100) as u8)
+                } else {
+                    None
+                };
+                set_update_progress(
+                    "downloading",
+                    &prev_version,
+                    downloaded_bytes,
+                    expected_total,
+                    pct,
+                    "正在下载更新安装包…",
+                );
+            }
+        }
+        file.flush().await?;
+        drop(file);
+
+        if downloaded_bytes == 0 {
+            bail!("下载的安装包为空");
+        }
+        if tokio::fs::try_exists(dest).await.unwrap_or(false) {
+            let _ = tokio::fs::remove_file(dest).await;
+        }
+        tokio::fs::rename(&part_path, dest)
+            .await
+            .context("保存更新安装包失败")?;
+
+        Ok(DownloadUpdateResult {
+            path: trimmed_dest.to_string(),
+            bytes: downloaded_bytes,
+        })
+    }
+    .await;
+
+    match &result {
+        Ok(done) => set_update_progress(
+            "ready",
+            &prev_version,
+            done.bytes,
+            done.bytes,
+            Some(100),
+            "更新安装包下载完成",
+        ),
+        Err(err) => {
+            let _ = tokio::fs::remove_file(&part_path).await;
+            set_update_progress("error", &prev_version, 0, 0, None, format!("{err:#}"));
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -508,5 +635,21 @@ mod tests {
 
         let (deb, _, _, _, _, _) = select_platform_assets(&assets, "linux", "x86_64", true);
         assert_eq!(deb, "https://example.com/amd64.deb");
+    }
+
+    #[test]
+    fn test_update_progress_snapshot() {
+        set_update_progress(
+            "downloading",
+            "v0.0.11",
+            512 * 1024,
+            1024 * 1024,
+            Some(50),
+            "正在下载更新安装包…",
+        );
+        let snap = get_update_progress();
+        assert_eq!(snap.phase, "downloading");
+        assert_eq!(snap.version, "v0.0.11");
+        assert_eq!(snap.percent, Some(50));
     }
 }
