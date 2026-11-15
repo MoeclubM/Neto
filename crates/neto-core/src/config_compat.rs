@@ -158,6 +158,10 @@ fn flux_config(node: &Value, listen: SocketAddr) -> Result<FluxClientConfig> {
             &["standby_channels", "standby-channels", "standbyChannels"][..],
         ),
         (
+            "channel_max_mbps",
+            &["channel_max_mbps", "channel-max-mbps", "channelMaxMbps"][..],
+        ),
+        (
             "rotation_interval_sec",
             &[
                 "rotation_interval_sec",
@@ -1863,6 +1867,8 @@ mod tests {
 
     #[test]
     fn parses_flux_default_and_manual_multi_channel_nodes() -> Result<()> {
+        let (_, tcp_pub) = aerion::flux::generate_flux_x25519_keypair()?;
+        let (_, udp_pub) = aerion::flux::generate_flux_x25519_keypair()?;
         let auto_node = serde_json::json!({
             "type": "flux",
             "name": "Flux-Auto",
@@ -1883,6 +1889,7 @@ mod tests {
             auto_cfg.options.ip_strategy,
             aerion::FluxIpStrategy::Latency
         );
+        assert_eq!(auto_cfg.options.channel_max_mbps, 20);
         assert_eq!(auto_cfg.channels.len(), 2);
         assert_eq!(auto_cfg.channels[0].transport, FluxTransportKind::Tcp);
         assert_eq!(auto_cfg.channels[0].ip_version, "ipv4");
@@ -1903,13 +1910,14 @@ mod tests {
             "flux": {
                 "ip_strategy": "latency",
                 "standby_channels": 3,
+                "channel_max_mbps": 40,
                 "channels": [
                     {
                         "id": "direct-obfs",
                         "connect_ports": "443",
                         "transport": "tcp",
                         "security": "obfs",
-                        "obfs_key": "flux-tcp-obfs-secret",
+                        "public_key": tcp_pub,
                         "resolved_v4": ["198.51.100.1"]
                     },
                     {
@@ -1920,13 +1928,14 @@ mod tests {
                         "http_mode": "ws",
                         "http_path": "/flux-ws",
                         "security": "tls",
+                        "tls_binding": false,
                         "resolved_v6": ["2001:db8::2"]
                     },
                     {
                         "id": "udp-obfs",
                         "connect_ports": "21000-21002",
                         "transport": "udp",
-                        "obfs_key": "flux-obfs-secret",
+                        "public_key": udp_pub,
                         "role": "udp_relay",
                         "weight": 80,
                         "resolved_v4": ["198.51.100.9"]
@@ -1944,11 +1953,15 @@ mod tests {
             aerion::FluxIpStrategy::Latency
         );
         assert_eq!(manual_cfg.options.standby_channels, 3);
+        assert_eq!(manual_cfg.options.channel_max_mbps, 40);
         assert_eq!(manual_cfg.channels.len(), 3);
         assert_eq!(manual_cfg.channels[0].security, FluxSecurityMode::Obfs);
+        assert_eq!(manual_cfg.channels[0].public_key.as_deref(), Some(tcp_pub.as_str()));
         assert_eq!(manual_cfg.channels[1].security, FluxSecurityMode::Tls);
+        assert!(!manual_cfg.channels[1].tls_binding);
         assert_eq!(manual_cfg.channels[1].http_path, "/flux-ws");
         assert_eq!(manual_cfg.channels[2].security, FluxSecurityMode::Obfs);
+        assert_eq!(manual_cfg.channels[2].public_key.as_deref(), Some(udp_pub.as_str()));
         assert_eq!(
             manual_cfg.channels[2].role,
             aerion::FluxChannelRole::UdpRelay
@@ -1970,7 +1983,7 @@ mod tests {
             "host": "edge.example.com",
             "port": 443,
             "key": "user-uuid",
-            "channels": [{ "connect_ports": "10000-10100", "transport": "udp", "obfs_key": "flux-obfs-secret" }]
+            "channels": [{ "connect_ports": "10000-10100", "transport": "udp", "public_key": udp_pub }]
         });
         assert!(node_to_proxy_config(&invalid_ports, "127.0.0.1:1080".parse()?).is_err());
         Ok(())
