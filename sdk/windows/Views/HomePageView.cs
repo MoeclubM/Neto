@@ -113,11 +113,11 @@ public sealed class HomePageView
         _sessionBadgeText = new TextBlock
         {
             FontSize = 11,
-            Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+            Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
         };
         _sessionBadge = new Border
         {
-            Background = NetoUiFactory.BrushResource("SubtleFillColorSecondaryBrush", Color.FromArgb(24, 128, 128, 128)),
+            Style = NetoUiFactory.StyleResource("NetoBadgeStyle"),
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(6, 2, 6, 2),
             VerticalAlignment = VerticalAlignment.Center,
@@ -138,7 +138,7 @@ public sealed class HomePageView
         {
             FontSize = 12,
             TextTrimming = TextTrimming.CharacterEllipsis,
-            Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+            Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
         };
 
         var connLeft = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
@@ -167,7 +167,7 @@ public sealed class HomePageView
         {
             Text = "当前节点",
             FontSize = 11,
-            Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+            Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
         });
         _nodeNameLabel = new TextBlock
         {
@@ -180,7 +180,7 @@ public sealed class HomePageView
         {
             FontSize = 12,
             TextTrimming = TextTrimming.CharacterEllipsis,
-            Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+            Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
         };
         nodeLeft.Children.Add(_nodeNameLabel);
         nodeLeft.Children.Add(_nodeMetaLabel);
@@ -518,7 +518,11 @@ public sealed class HomePageView
                     if (snap.Connection.Connected)
                     {
                         var closeAllBtn = new Button { Content = "断开全部", Padding = new Thickness(8, 2, 8, 2), FontSize = 11 };
-                        closeAllBtn.Click += async (_, _) => await _client.CloseAllConnectionsAsync();
+                        closeAllBtn.Click += async (_, _) =>
+                        {
+                            try { await _client.CloseAllConnectionsAsync(); }
+                            catch (Exception ex) { _client.ReportActionError(ex.Message); }
+                        };
                         connActions.Children.Add(closeAllBtn);
                     }
                     if (_onOpenConnections != null)
@@ -533,7 +537,7 @@ public sealed class HomePageView
                     _activeConnSub = new TextBlock
                     {
                         FontSize = 12,
-                        Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                        Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
                     };
                     acStack.Children.Add(_activeConnTitle);
                     acStack.Children.Add(_activeConnSub);
@@ -571,7 +575,7 @@ public sealed class HomePageView
                         {
                             Text = "检测出口 IP 与站点连通延迟",
                             FontSize = 12,
-                            Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                            Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
                         });
                     }
                     else
@@ -601,7 +605,7 @@ public sealed class HomePageView
                     var trStack = new StackPanel { Spacing = 4 };
                     trStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("流量统计"));
                     _trafficTitle = new TextBlock { FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
-                    _trafficSub = new TextBlock { FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray) };
+                    _trafficSub = new TextBlock { FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle") };
                     trStack.Children.Add(_trafficTitle);
                     trStack.Children.Add(_trafficSub);
                     if (snap.ActiveProfile is { TotalBytes: > 0 })
@@ -636,7 +640,7 @@ public sealed class HomePageView
                     {
                         Text = prof != null ? $"{prof.NodeCount} 节点 · {prof.RuleCount} 规则" : "暂无订阅",
                         FontSize = 12,
-                        Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                        Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
                     });
                     builtCards.Add(NetoUiFactory.CreateCard(pStack));
                     break;
@@ -657,7 +661,7 @@ public sealed class HomePageView
                     var rStack = new StackPanel { Spacing = 4 };
                     rStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("运行信息"));
                     _runtimeTitle = new TextBlock { FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
-                    _runtimeSub = new TextBlock { FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray) };
+                    _runtimeSub = new TextBlock { FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle") };
                     rStack.Children.Add(_runtimeTitle);
                     rStack.Children.Add(_runtimeSub);
                     builtCards.Add(NetoUiFactory.CreateCard(rStack));

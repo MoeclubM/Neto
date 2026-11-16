@@ -167,7 +167,7 @@ public static class NetoWindowHelper
         {
             "dark" => 1,
             "light" => 0,
-            _ => Application.Current?.RequestedTheme == ApplicationTheme.Dark ? 1 : 0,
+            _ => root?.ActualTheme == ElementTheme.Dark ? 1 : 0,
         };
         if (hwnd != IntPtr.Zero)
         {

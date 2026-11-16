@@ -1,0 +1,60 @@
+<ResourceDictionary
+    x:Class="Neto.Sdk.Windows.NetoThemeResources"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Style x:Key="NetoSecondaryTextStyle" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+    </Style>
+    <Style x:Key="NetoPrimaryTextStyle" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+    </Style>
+    <Style x:Key="NetoSecondaryIconStyle" TargetType="FontIcon">
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+    </Style>
+    <Style x:Key="NetoCardStyle" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+    </Style>
+    <Style x:Key="NetoSelectedCardStyle" TargetType="Border" BasedOn="{StaticResource NetoCardStyle}">
+        <Setter Property="BorderBrush" Value="{ThemeResource AccentFillColorDefaultBrush}" />
+    </Style>
+    <Style x:Key="NetoBadgeStyle" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}" />
+    </Style>
+    <Style x:Key="NetoChartDividerStyle" TargetType="Line">
+        <Setter Property="Stroke" Value="{ThemeResource DividerStrokeColorDefaultBrush}" />
+    </Style>
+    <Style x:Key="NetoSelectedNodeStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+        <Setter Property="BorderBrush" Value="{ThemeResource AccentFillColorDefaultBrush}" />
+        <Setter Property="BorderThickness" Value="1.5" />
+    </Style>
+    <DataTemplate x:Key="NetoConnectionTemplate">
+        <Grid ColumnSpacing="2" MinWidth="1100" Padding="0,5">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="240" />
+                <ColumnDefinition Width="80" />
+                <ColumnDefinition Width="80" />
+                <ColumnDefinition Width="90" />
+                <ColumnDefinition Width="90" />
+                <ColumnDefinition Width="140" />
+                <ColumnDefinition Width="190" />
+                <ColumnDefinition Width="100" />
+                <ColumnDefinition Width="70" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="{Binding Host}" Margin="6,0" VerticalAlignment="Center" FontSize="12"
+                       TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding Host}" />
+            <TextBlock Grid.Column="1" Text="{Binding Download}" VerticalAlignment="Center" FontSize="12" />
+            <TextBlock Grid.Column="2" Text="{Binding Upload}" VerticalAlignment="Center" FontSize="12" />
+            <TextBlock Grid.Column="3" Text="{Binding DownloadSpeed}" VerticalAlignment="Center" FontSize="12" />
+            <TextBlock Grid.Column="4" Text="{Binding UploadSpeed}" VerticalAlignment="Center" FontSize="12" />
+            <TextBlock Grid.Column="5" Text="{Binding Outbound}" VerticalAlignment="Center" FontSize="12"
+                       TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding Outbound}" />
+            <TextBlock Grid.Column="6" Text="{Binding Rule}" VerticalAlignment="Center" FontSize="12"
+                       TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding Rule}" />
+            <TextBlock Grid.Column="7" Text="{Binding Duration}" VerticalAlignment="Center" FontSize="12" />
+            <Button Grid.Column="8" Content="断开" Command="{Binding CloseCommand}"
+                    Visibility="{Binding CloseVisibility}" Padding="8,3"
+                    AutomationProperties.Name="{Binding CloseLabel}" />
+        </Grid>
+    </DataTemplate>
+</ResourceDictionary>

@@ -113,7 +113,7 @@ public sealed class RulesPageView
             FontSize = 12,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(4, 0, 4, 0),
-            Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+            Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
         };
         _toggleTesterBtn = new Button { Content = "匹配测试" };
         _toggleTesterBtn.Click += (_, _) =>
@@ -436,7 +436,7 @@ public sealed class RulesPageView
                 _rulesListPanel.Children.Add(NetoUiFactory.CreateCard(new TextBlock
                 {
                     Text = res.Total == 0 ? "暂无分流规则" : "无匹配规则",
-                    Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                    Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
                 }));
                 return;
             }
@@ -490,7 +490,7 @@ public sealed class RulesPageView
             var res = await _client.TestRouteAsync(target, net);
             var outbound = string.IsNullOrEmpty(res.Outbound) ? res.Decision : $"{res.Decision} ({res.Outbound})";
             _routeResultText.Text = $"{res.Target} [{res.Network.ToUpperInvariant()}] -> {outbound}  |  {res.MatchedRule}";
-            _routeResultText.Foreground = NetoUiFactory.BrushResource("TextFillColorPrimaryBrush", Colors.White);
+            NetoUiFactory.UseTextStyle(_routeResultText, "NetoPrimaryTextStyle");
             _routeResultText.Visibility = Visibility.Visible;
         }
         catch (Exception ex)

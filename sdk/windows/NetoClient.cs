@@ -11,6 +11,9 @@ public sealed class NetoClient : IDisposable
     private int _tickCount;
     private bool _autoRefreshing;
     private bool _disposed;
+    private bool _polling;
+    private bool _probing;
+    private string? _pollError;
 
     public string DataDir { get; }
     public NetoSnapshot Snapshot { get; private set; } = new();
@@ -18,6 +21,9 @@ public sealed class NetoClient : IDisposable
     public bool Busy { get; private set; }
 
     public event Action<NetoSnapshot>? SnapshotChanged;
+
+    public void ReportActionError(string message) =>
+        EnqueueUi(() => { LastActionError = message; SnapshotChanged?.Invoke(Snapshot); });
 
     public NetoClient(string dataDir, string appId, string userAgent, DispatcherQueue dispatcher)
     {
@@ -35,7 +41,8 @@ public sealed class NetoClient : IDisposable
 
     private async Task PollTickAsync()
     {
-        if (_disposed) return;
+        if (_disposed || _polling) return;
+        _polling = true;
         _tickCount++;
         try
         {
@@ -43,11 +50,14 @@ public sealed class NetoClient : IDisposable
             var snap = node.Deserialize<NetoSnapshot>();
             if (snap != null)
             {
+                if (_disposed) return;
+                if (LastActionError == _pollError) LastActionError = null;
+                _pollError = null;
                 Snapshot = snap;
                 SnapshotChanged?.Invoke(snap);
-                if (snap.Connection.Connected && _tickCount % 4 == 0)
+                if (snap.Connection.Connected && _tickCount % 4 == 0 && !_probing)
                 {
-                    _ = NetoNativeBridge.CallAsync("probe_tunnel");
+                    _ = ProbeTunnelAsync();
                 }
                 if (_tickCount % 60 == 0 && !_autoRefreshing)
                 {
@@ -61,8 +71,39 @@ public sealed class NetoClient : IDisposable
                 }
             }
         }
-        catch
+        catch (Exception ex)
         {
+            if (!_disposed)
+            {
+                _pollError = $"状态刷新失败：{ex.Message}";
+                LastActionError = _pollError;
+                SnapshotChanged?.Invoke(Snapshot);
+            }
+        }
+        finally
+        {
+            _polling = false;
+        }
+    }
+
+    private async Task ProbeTunnelAsync()
+    {
+        _probing = true;
+        try
+        {
+            await NetoNativeBridge.CallAsync("probe_tunnel");
+        }
+        catch (Exception ex)
+        {
+            if (!_disposed)
+            {
+                LastActionError = $"连接检查失败：{ex.Message}";
+                SnapshotChanged?.Invoke(Snapshot);
+            }
+        }
+        finally
+        {
+            _probing = false;
         }
     }
 
@@ -191,49 +232,25 @@ public sealed class NetoClient : IDisposable
 
     public async Task<NetoConnectionsSnapshot> GetConnectionsAsync()
     {
-        try
-        {
-            var res = await NetoNativeBridge.CallAsync("list_connections");
-            return res.Deserialize<NetoConnectionsSnapshot>() ?? new NetoConnectionsSnapshot();
-        }
-        catch
-        {
-            return new NetoConnectionsSnapshot();
-        }
+        var res = await NetoNativeBridge.CallAsync("list_connections");
+        return res.Deserialize<NetoConnectionsSnapshot>()
+            ?? throw new InvalidOperationException("连接列表返回了空数据");
     }
 
     public async Task CloseConnectionAsync(ulong id)
     {
-        try
-        {
-            await NetoNativeBridge.CallAsync("close_connection", new { id });
-        }
-        catch
-        {
-        }
+        await NetoNativeBridge.CallAsync("close_connection", new { id });
     }
 
     public async Task CloseAllConnectionsAsync()
     {
-        try
-        {
-            await NetoNativeBridge.CallAsync("close_all_connections");
-        }
-        catch
-        {
-        }
+        await NetoNativeBridge.CallAsync("close_all_connections");
         await RefreshSnapshotAsync();
     }
 
     public async Task ClearClosedConnectionsAsync()
     {
-        try
-        {
-            await NetoNativeBridge.CallAsync("clear_closed_connections");
-        }
-        catch
-        {
-        }
+        await NetoNativeBridge.CallAsync("clear_closed_connections");
     }
 
     public async Task<NetoRulesListResult> GetRulesAsync(string filter = "", int limit = 500)

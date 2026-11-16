@@ -11,17 +11,6 @@ namespace Neto.Sdk.Windows.Views;
 
 public static class NetoUiFactory
 {
-    public static Brush BrushResource(string key, Color fallback)
-    {
-        if (Application.Current?.Resources != null &&
-            Application.Current.Resources.TryGetValue(key, out var val) &&
-            val is Brush b)
-        {
-            return b;
-        }
-        return new SolidColorBrush(fallback);
-    }
-
     public static Style? StyleResource(string key)
     {
         if (Application.Current?.Resources != null &&
@@ -33,12 +22,17 @@ public static class NetoUiFactory
         return null;
     }
 
+    public static void UseTextStyle(TextBlock text, string key)
+    {
+        text.ClearValue(TextBlock.ForegroundProperty);
+        text.Style = StyleResource(key);
+    }
+
     public static Border CreateCard(UIElement child, Thickness? padding = null)
     {
         return new Border
         {
-            Background = BrushResource("CardBackgroundFillColorDefaultBrush", Color.FromArgb(18, 128, 128, 128)),
-            BorderBrush = BrushResource("CardStrokeColorDefaultBrush", Color.FromArgb(36, 128, 128, 128)),
+            Style = StyleResource("NetoCardStyle"),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
             Padding = padding ?? new Thickness(14, 12, 14, 12),
@@ -83,7 +77,7 @@ public static class NetoUiFactory
             Text = text,
             FontSize = 13,
             FontWeight = FontWeights.SemiBold,
-            Foreground = BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+            Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
             Margin = new Thickness(2, 4, 0, 2),
         };
     }
@@ -131,7 +125,7 @@ public static class NetoUiFactory
             {
                 Text = subtitle,
                 FontSize = 11,
-                Foreground = BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
             });
         }
         control.VerticalAlignment = VerticalAlignment.Center;
@@ -155,14 +149,14 @@ public static class NetoUiFactory
         });
         summaryBlock.FontSize = 12;
         summaryBlock.TextTrimming = TextTrimming.CharacterEllipsis;
-        summaryBlock.Foreground = BrushResource("TextFillColorSecondaryBrush", Colors.Gray);
+        NetoUiFactory.UseTextStyle(summaryBlock, "NetoSecondaryTextStyle");
         left.Children.Add(summaryBlock);
         var chevron = new FontIcon
         {
             Glyph = "\uE76C",
             FontSize = 12,
             VerticalAlignment = VerticalAlignment.Center,
-            Foreground = BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+            Style = NetoUiFactory.StyleResource("NetoSecondaryIconStyle"),
         };
         Grid.SetColumn(chevron, 1);
         grid.Children.Add(left);
@@ -220,25 +214,26 @@ public static class NetoUiFactory
 
     public static Border CreateTagBadge(string text, Color? tint = null)
     {
-        var fg = tint.HasValue
-            ? new SolidColorBrush(tint.Value)
-            : BrushResource("TextFillColorSecondaryBrush", Colors.Gray);
-        var bg = tint.HasValue
-            ? new SolidColorBrush(Color.FromArgb(28, tint.Value.R, tint.Value.G, tint.Value.B))
-            : BrushResource("SubtleFillColorSecondaryBrush", Color.FromArgb(22, 128, 128, 128));
-        return new Border
+        var label = new TextBlock
         {
-            Background = bg,
+            Text = text,
+            FontSize = 11,
+            Style = StyleResource("NetoSecondaryTextStyle"),
+        };
+        var badge = new Border
+        {
+            Style = StyleResource("NetoBadgeStyle"),
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(6, 2, 6, 2),
             VerticalAlignment = VerticalAlignment.Center,
-            Child = new TextBlock
-            {
-                Text = text,
-                FontSize = 11,
-                Foreground = fg,
-            },
+            Child = label,
         };
+        if (tint.HasValue)
+        {
+            label.Foreground = new SolidColorBrush(tint.Value);
+            badge.Background = new SolidColorBrush(Color.FromArgb(28, tint.Value.R, tint.Value.G, tint.Value.B));
+        }
+        return badge;
     }
 
     public static Color LatencyColor(ulong? latencyMs, bool hasError)
@@ -279,12 +274,12 @@ public sealed class NetoDualSeriesChart
             FontSize = 12,
             FontFamily = new FontFamily("Consolas"),
             VerticalAlignment = VerticalAlignment.Center,
-            Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+            Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
         };
         _canvas = new Canvas { Height = 56, HorizontalAlignment = HorizontalAlignment.Stretch };
         _baseLine = new Line
         {
-            Stroke = NetoUiFactory.BrushResource("DividerStrokeColorDefaultBrush", Color.FromArgb(40, 128, 128, 128)),
+            Style = NetoUiFactory.StyleResource("NetoChartDividerStyle"),
             StrokeThickness = 1,
         };
         _primaryFill = new Polygon

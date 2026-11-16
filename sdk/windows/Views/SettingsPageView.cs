@@ -65,6 +65,7 @@ public sealed class SettingsPageView
     private bool _updating;
     private bool _inputsInitialized;
     private bool _inputsDirty;
+    private string _lastServiceStatus = "";
 
     private static readonly (string Key, string Label)[] ShellFormats =
     [
@@ -246,7 +247,7 @@ public sealed class SettingsPageView
         {
             Text = $"v{_currentVersion}",
             FontSize = 11,
-            Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+            Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
         };
         versionLeft.Children.Add(_versionSubtitleText);
         _updateFeedbackText = new TextBlock
@@ -612,7 +613,7 @@ public sealed class SettingsPageView
                     TextWrapping = TextWrapping.Wrap,
                     FontSize = 12,
                     IsTextSelectionEnabled = true,
-                    Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                    Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
                 },
             });
         }
@@ -662,7 +663,7 @@ public sealed class SettingsPageView
             progressBar.Minimum = 0;
             progressBar.Maximum = 100;
             progressBar.Visibility = Visibility.Visible;
-            statusText.Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray);
+            NetoUiFactory.UseTextStyle(statusText, "NetoSecondaryTextStyle");
             statusText.Text = "正在连接下载源…";
             statusText.Visibility = Visibility.Visible;
             _onNotify?.Invoke("正在下载更新", $"开始下载 {info.LatestVersion} 安装包…", true);
@@ -736,7 +737,7 @@ public sealed class SettingsPageView
         {
             _tunServiceRow.Visibility = Visibility.Collapsed;
         }
-        else
+        else if (_lastServiceStatus != svcStatus)
         {
             _tunServiceRow.Visibility = Visibility.Visible;
             _tunServiceStatusHost.Children.Clear();
@@ -749,6 +750,7 @@ public sealed class SettingsPageView
             _tunServiceStatusHost.Children.Add(NetoUiFactory.CreateTagBadge(label, tint));
             _tunServiceActionBtn.Content = btnLabel;
         }
+        _lastServiceStatus = svcStatus;
 
         var themeIdx = Array.FindIndex(ThemeModes, m => m.Key == s.ThemeMode);
         _themeCombo.SelectedIndex = themeIdx >= 0 ? themeIdx : 0;

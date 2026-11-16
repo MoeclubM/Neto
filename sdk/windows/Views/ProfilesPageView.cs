@@ -395,7 +395,7 @@ public sealed class ProfilesPageView
             _savedList.Children.Add(NetoUiFactory.CreateCard(new TextBlock
             {
                 Text = "暂无订阅配置",
-                Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
             }));
             return;
         }
@@ -486,7 +486,7 @@ public sealed class ProfilesPageView
             {
                 Text = string.Join(" · ", metaParts),
                 FontSize = 12,
-                Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
             });
 
             if (prof.TotalBytes > 0)
@@ -505,7 +505,7 @@ public sealed class ProfilesPageView
                 {
                     Text = $"{NetoFormat.FormatBytes(prof.UsedBytes)} / {NetoFormat.FormatBytes(prof.TotalBytes)}",
                     FontSize = 12,
-                    Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                    Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
                 };
                 Grid.SetColumn(qLabel, 1);
                 quotaGrid.Children.Add(bar);

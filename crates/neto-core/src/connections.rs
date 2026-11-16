@@ -120,8 +120,14 @@ struct ConnectionGuard {
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        if let Ok(mut map) = REGISTRY.lock() {
-            map.remove(&self.id);
+        let registered = REGISTRY
+            .lock()
+            .expect("connection registry lock poisoned")
+            .remove(&self.id)
+            .is_some();
+        // A runtime reset already removed these entries and cleared its history.
+        if !registered {
+            return;
         }
         if let Ok(mut closed) = CLOSED.lock() {
             if closed.len() >= CLOSED_LIMIT {
@@ -183,7 +189,8 @@ pub fn close_connection(id: u64) -> bool {
     let found = REGISTRY
         .lock()
         .expect("connection registry lock poisoned")
-        .remove(&id);
+        .get(&id)
+        .cloned();
     if let Some(entry) = found {
         let _ = entry.cancel_tx.send(true);
         true
@@ -194,10 +201,8 @@ pub fn close_connection(id: u64) -> bool {
 
 pub fn close_all_connections() -> usize {
     let entries: Vec<Arc<TrackedEntry>> = {
-        let mut map = REGISTRY.lock().expect("connection registry lock poisoned");
-        let vals = map.values().cloned().collect();
-        map.clear();
-        vals
+        let map = REGISTRY.lock().expect("connection registry lock poisoned");
+        map.values().cloned().collect()
     };
     let count = entries.len();
     for entry in entries {
@@ -262,7 +267,10 @@ pub async fn spawn_tracked_socks_ingress(
             let _ = client.set_nodelay(true);
             let matcher = matcher.clone();
             tokio::spawn(async move {
-                let _ = handle_tracked_socks_client(client, inner_socks, matcher).await;
+                if let Err(error) = handle_tracked_socks_client(client, inner_socks, matcher).await
+                {
+                    log::warn!("tracked SOCKS connection failed: {error:#}");
+                }
             });
         }
     });
@@ -431,16 +439,22 @@ async fn read_socks5_reply(stream: &mut TcpStream) -> Result<(u8, SocketAddr, Ve
 }
 
 fn parse_socks5_udp_header(pkt: &[u8]) -> Option<(ProxyTarget, usize)> {
-    if pkt.len() < 10 || pkt[2] != 0 {
+    if pkt.len() < 4 || pkt[..3] != [0, 0, 0] {
         return None;
     }
     match pkt[3] {
         0x01 => {
+            if pkt.len() < 10 {
+                return None;
+            }
             let ip = Ipv4Addr::new(pkt[4], pkt[5], pkt[6], pkt[7]);
             let port = u16::from_be_bytes([pkt[8], pkt[9]]);
             Some((ProxyTarget::Ip(SocketAddr::new(IpAddr::V4(ip), port)), 10))
         }
         0x03 => {
+            if pkt.len() < 5 {
+                return None;
+            }
             let dlen = pkt[4] as usize;
             if pkt.len() < 7 + dlen {
                 return None;
@@ -482,30 +496,33 @@ async fn handle_tracked_socks_client(
             let (guard, mut cancel_rx) =
                 register_connection(format_proxy_target(&target), "tcp", rule, outbound);
 
-            let mut upstream = TcpStream::connect(inner_socks).await?;
-            let _ = upstream.set_nodelay(true);
-            let mut pipelined = Vec::with_capacity(3 + raw_req.len());
-            pipelined.extend_from_slice(&[0x05, 0x01, 0x00]);
-            pipelined.extend_from_slice(&raw_req);
-            upstream.write_all(&pipelined).await?;
-            let mut up_greet = [0u8; 2];
-            upstream.read_exact(&mut up_greet).await?;
-            ensure!(up_greet == [0x05, 0x00], "inner SOCKS5 greeting rejected");
-            let (rep, _, raw_reply) = read_socks5_reply(&mut upstream).await?;
-            client.write_all(&raw_reply).await?;
-            if rep != 0x00 {
-                return Ok(());
-            }
+            let relay = async {
+                let mut upstream = TcpStream::connect(inner_socks).await?;
+                let _ = upstream.set_nodelay(true);
+                let mut pipelined = Vec::with_capacity(3 + raw_req.len());
+                pipelined.extend_from_slice(&[0x05, 0x01, 0x00]);
+                pipelined.extend_from_slice(&raw_req);
+                upstream.write_all(&pipelined).await?;
+                let mut up_greet = [0u8; 2];
+                upstream.read_exact(&mut up_greet).await?;
+                ensure!(up_greet == [0x05, 0x00], "inner SOCKS5 greeting rejected");
+                let (rep, _, raw_reply) = read_socks5_reply(&mut upstream).await?;
+                client.write_all(&raw_reply).await?;
+                if rep != 0x00 {
+                    return Ok(());
+                }
 
-            let mut counted_client = CountedStream {
-                inner: &mut client,
-                entry: &guard.entry,
+                let mut counted_client = CountedStream {
+                    inner: &mut client,
+                    entry: &guard.entry,
+                };
+                copy_bidirectional(&mut counted_client, &mut upstream).await?;
+                Ok::<(), anyhow::Error>(())
             };
             tokio::select! {
-                _ = copy_bidirectional(&mut counted_client, &mut upstream) => {}
-                _ = cancel_rx.changed() => {}
+                result = relay => result,
+                _ = cancel_rx.changed() => Ok(()),
             }
-            Ok(())
         }
         0x03 => {
             let mut upstream_ctrl = TcpStream::connect(inner_socks).await?;
@@ -575,9 +592,15 @@ async fn handle_tracked_socks_client(
                     recv_res = client_udp.recv_from(&mut cbuf) => {
                         match recv_res {
                             Ok((n, peer)) => {
+                                if client_peer.is_some_and(|expected| expected != peer) {
+                                    continue;
+                                }
+                                let Some((dst, hdr_len)) = parse_socks5_udp_header(&cbuf[..n]) else {
+                                    continue;
+                                };
+                                relay_udp.send(&cbuf[..n]).await.context("send tracked UDP upstream")?;
                                 idle_sleep.as_mut().reset(tokio::time::Instant::now() + TRACKED_UDP_IDLE_TIMEOUT);
                                 client_peer = Some(peer);
-                                if let Some((dst, hdr_len)) = parse_socks5_udp_header(&cbuf[..n]) {
                                     if first_target.is_none() {
                                         let (rule, out) = matcher(&dst, RouteNetwork::Udp);
                                         if let Ok(mut meta) = guard.entry.meta.lock() {
@@ -593,10 +616,8 @@ async fn handle_tracked_socks_client(
                                     let payload = n.saturating_sub(hdr_len) as u64;
                                     guard.entry.upload_bytes.fetch_add(payload, Ordering::Relaxed);
                                     SESSION_UPLOAD_BYTES.fetch_add(payload, Ordering::Relaxed);
-                                }
-                                let _ = relay_udp.send(&cbuf[..n]).await;
                             }
-                            Err(_) => break,
+                            Err(error) => return Err(error).context("receive tracked UDP client packet"),
                         }
                     }
                     recv_res = relay_udp.recv(&mut rbuf) => {
@@ -604,16 +625,16 @@ async fn handle_tracked_socks_client(
                             Ok(n) => {
                                 idle_sleep.as_mut().reset(tokio::time::Instant::now() + TRACKED_UDP_IDLE_TIMEOUT);
                                 if let Some(peer) = client_peer {
-                                    let hdr_len = parse_socks5_udp_header(&rbuf[..n])
-                                        .map(|(_, l)| l)
-                                        .unwrap_or(10);
+                                    let Some((_, hdr_len)) = parse_socks5_udp_header(&rbuf[..n]) else {
+                                        continue;
+                                    };
+                                    client_udp.send_to(&rbuf[..n], peer).await.context("send tracked UDP response")?;
                                     let payload = n.saturating_sub(hdr_len) as u64;
                                     guard.entry.download_bytes.fetch_add(payload, Ordering::Relaxed);
                                     SESSION_DOWNLOAD_BYTES.fetch_add(payload, Ordering::Relaxed);
-                                    let _ = client_udp.send_to(&rbuf[..n], peer).await;
                                 }
                             }
-                            Err(_) => break,
+                            Err(error) => return Err(error).context("receive tracked UDP upstream response"),
                         }
                     }
                 }
@@ -628,3 +649,6 @@ async fn handle_tracked_socks_client(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

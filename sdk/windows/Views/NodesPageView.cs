@@ -96,7 +96,7 @@ public sealed class NodesPageView
             FontSize = 12,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(4, 0, 4, 0),
-            Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+            Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
         };
         _locateBtn = new Button { Content = "定位" };
         _testAllBtn = new Button { Content = "测速" };
@@ -272,7 +272,7 @@ public sealed class NodesPageView
                 Text = "当前为直连模式，节点暂不接管流量",
                 FontSize = 12,
                 VerticalAlignment = VerticalAlignment.Center,
-                Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
             });
             var switchRuleBtn = new Button
             {
@@ -315,7 +315,7 @@ public sealed class NodesPageView
                     Text = targetName,
                     FontSize = 11,
                     TextTrimming = TextTrimming.CharacterEllipsis,
-                    Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                    Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
                 });
 
                 var tabBtn = new Button
@@ -327,8 +327,7 @@ public sealed class NodesPageView
                 };
                 if (isTabActive)
                 {
-                    tabBtn.BorderBrush = NetoUiFactory.BrushResource("AccentFillColorDefaultBrush", Color.FromArgb(255, 0, 120, 212));
-                    tabBtn.BorderThickness = new Thickness(1.5);
+                    tabBtn.Style = NetoUiFactory.StyleResource("NetoSelectedNodeStyle");
                 }
                 var targetGroupName = grp.Name;
                 tabBtn.Click += (_, _) =>
@@ -362,7 +361,7 @@ public sealed class NodesPageView
                 FontSize = 12,
                 Margin = new Thickness(2, 0, 2, 0),
                 TextTrimming = TextTrimming.CharacterEllipsis,
-                Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
             });
         }
 
@@ -381,7 +380,7 @@ public sealed class NodesPageView
             var emptyCard = NetoUiFactory.CreateCard(new TextBlock
             {
                 Text = totalRealCount == 0 ? "暂无可用节点" : "没有匹配的节点",
-                Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
             });
             Grid.SetColumnSpan(emptyCard, 2);
             _nodesGrid.Children.Add(emptyCard);
@@ -488,7 +487,7 @@ public sealed class NodesPageView
             var emptyCard = NetoUiFactory.CreateCard(new TextBlock
             {
                 Text = "当前策略组下没有匹配项",
-                Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                Style = NetoUiFactory.StyleResource("NetoSecondaryTextStyle"),
             });
             Grid.SetColumnSpan(emptyCard, 2);
             _nodesGrid.Children.Add(emptyCard);
@@ -603,7 +602,7 @@ public sealed class NodesPageView
                 card = NetoUiFactory.CreateCard(rowGrid, new Thickness(8, 6, 10, 6));
                 if (isSelected)
                 {
-                    card.BorderBrush = NetoUiFactory.BrushResource("AccentFillColorDefaultBrush", Color.FromArgb(255, 0, 120, 212));
+                    card.Style = NetoUiFactory.StyleResource("NetoSelectedCardStyle");
                     card.BorderThickness = new Thickness(1.5);
                     _selectedCardElement = card;
                 }
@@ -694,7 +693,7 @@ public sealed class NodesPageView
         var card = NetoUiFactory.CreateCard(rowGrid, new Thickness(8, 6, 10, 6));
         if (isSelected)
         {
-            card.BorderBrush = NetoUiFactory.BrushResource("AccentFillColorDefaultBrush", Color.FromArgb(255, 0, 120, 212));
+            card.Style = NetoUiFactory.StyleResource("NetoSelectedCardStyle");
             card.BorderThickness = new Thickness(1.5);
             _selectedCardElement = card;
         }
