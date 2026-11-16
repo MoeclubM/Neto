@@ -553,7 +553,8 @@ async fn handle_tracked_socks_client(
             let mut cbuf = vec![0u8; 65535];
             let mut rbuf = vec![0u8; 65535];
             let mut client_peer: Option<SocketAddr> = None;
-            let mut target_updated = false;
+            let mut first_target = None::<String>;
+            let mut multiple_targets = false;
             let idle_sleep = tokio::time::sleep(TRACKED_UDP_IDLE_TIMEOUT);
             tokio::pin!(idle_sleep);
 
@@ -577,12 +578,20 @@ async fn handle_tracked_socks_client(
                                 idle_sleep.as_mut().reset(tokio::time::Instant::now() + TRACKED_UDP_IDLE_TIMEOUT);
                                 client_peer = Some(peer);
                                 if let Some((dst, hdr_len)) = parse_socks5_udp_header(&cbuf[..n]) {
-                                    if !target_updated {
+                                    if first_target.is_none() {
                                         let (rule, out) = matcher(&dst, RouteNetwork::Udp);
+                                        let host = format_proxy_target(&dst);
                                         if let Ok(mut meta) = guard.entry.meta.lock() {
-                                            *meta = (format_proxy_target(&dst), rule, out);
+                                            *meta = (host.clone(), rule, out);
                                         }
-                                        target_updated = true;
+                                        first_target = Some(host);
+                                    } else if !multiple_targets
+                                        && first_target.as_deref() != Some(format_proxy_target(&dst).as_str())
+                                    {
+                                        if let Ok(mut meta) = guard.entry.meta.lock() {
+                                            *meta = ("UDP 多目标".to_string(), String::new(), String::new());
+                                        }
+                                        multiple_targets = true;
                                     }
                                     let payload = n.saturating_sub(hdr_len) as u64;
                                     guard.entry.upload_bytes.fetch_add(payload, Ordering::Relaxed);
