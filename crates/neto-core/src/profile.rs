@@ -1314,6 +1314,51 @@ pub fn merge_preserved_groups(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn managed_meta_subscription_keeps_format_on_refresh() -> Result<()> {
+        use crate::NetoController;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await?;
+                let mut buffer = [0; 4096];
+                let size = stream.read(&mut buffer).await?;
+                requests.push(String::from_utf8_lossy(&buffer[..size]).into_owned());
+                let body = "proxies: []\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).await?;
+            }
+            Ok::<_, std::io::Error>(requests)
+        });
+
+        let dir = std::env::temp_dir().join(format!(
+            "neto-meta-subscription-{}-{}",
+            std::process::id(),
+            crate::telemetry::now_ms()
+        ));
+        let controller = NetoController::new(&dir, "AerionTest", None)?;
+        let url = format!("http://{addr}/sub?token=test&types=anytls&flag=aerion");
+        controller
+            .sync_managed_subscription("managed", "Test", &url, "meta", None)
+            .await?;
+        controller.refresh_profile(Some("managed")).await?;
+        let requests = server.await??;
+        for request in requests {
+            assert!(request.starts_with("GET /sub?token=test&types=anytls&flag=meta "));
+        }
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
     #[test]
     fn parses_userinfo_header() {
         let info = parse_subscription_userinfo(
