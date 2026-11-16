@@ -82,6 +82,9 @@ fun NetoNodesPane(
     val groupsByName = remember(snapshot.proxyGroups) {
         snapshot.proxyGroups.associateBy { it.name }
     }
+    val hasRealNodes = remember(snapshot.nodes) {
+        snapshot.nodes.any { it.supported && !isNetoInfoPseudoNode(it.name) }
+    }
 
     val activeGroup = if (isRuleWithGroups) {
         snapshot.proxyGroups.firstOrNull { it.name == selectedGroupName }
@@ -91,11 +94,16 @@ fun NetoNodesPane(
         null
     }
 
-    val protocols = remember(snapshot.nodes) {
-        snapshot.nodes.map { it.protocolLabel }.filter { it.isNotBlank() }.distinct().sorted()
+    val protocols = remember(snapshot.nodes, hasRealNodes) {
+        snapshot.nodes
+            .filter { !hasRealNodes || !isNetoInfoPseudoNode(it.name) }
+            .map { it.protocolLabel }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
     }
 
-    val groupMembers = remember(activeGroup, nodesByName, groupsByName, q, snapshot.nodeSortMode) {
+    val groupMembers = remember(activeGroup, nodesByName, groupsByName, hasRealNodes, q, snapshot.nodeSortMode) {
         if (activeGroup == null) {
             emptyList()
         } else {
@@ -115,6 +123,8 @@ fun NetoNodesPane(
                     builtinLabel = builtin,
                 )
             }.filter { entry ->
+                !(hasRealNodes && entry.subGroup == null && entry.builtinLabel == null && isNetoInfoPseudoNode(entry.name))
+            }.filter { entry ->
                 q.isEmpty() ||
                     entry.name.lowercase().contains(q) ||
                     entry.node?.protocolLabel?.lowercase()?.contains(q) == true ||
@@ -125,18 +135,23 @@ fun NetoNodesPane(
             val nodeItems = rawEntries.filter { it.node != null }
             val sortedNodes = when (snapshot.nodeSortMode) {
                 "latency" -> nodeItems.sortedWith(
-                    compareBy<GroupMemberEntry> { it.node?.latencyMs ?: Long.MAX_VALUE }
+                    compareBy<GroupMemberEntry> { isNetoInfoPseudoNode(it.name) }
+                        .thenBy { it.node?.latencyMs ?: Long.MAX_VALUE }
                         .thenBy { it.node?.index ?: Int.MAX_VALUE }
                 )
-                "name" -> nodeItems.sortedBy { it.name.lowercase() }
+                "name" -> nodeItems.sortedWith(
+                    compareBy<GroupMemberEntry> { isNetoInfoPseudoNode(it.name) }
+                        .thenBy { it.name.lowercase() }
+                )
                 else -> nodeItems
             }
             pinned + sortedNodes
         }
     }
 
-    val flatVisibleNodes = remember(snapshot.nodes, protoFilter, q) {
+    val flatVisibleNodes = remember(snapshot.nodes, hasRealNodes, protoFilter, q) {
         snapshot.nodes.filter { node ->
+            (!hasRealNodes || !isNetoInfoPseudoNode(node.name)) &&
             (protoFilter.isEmpty() || node.protocolLabel.equals(protoFilter, ignoreCase = true)) &&
                 (q.isEmpty() ||
                     node.name.lowercase().contains(q) ||
@@ -167,7 +182,7 @@ fun NetoNodesPane(
                 )
                 Button(
                     onClick = {
-                        if (activeGroup != null && activeGroup.proxies.any { nodesByName.containsKey(it) }) {
+                        if (activeGroup != null) {
                             client.testGroupNodes(activeGroup.name)
                         } else {
                             client.testAllNodes()

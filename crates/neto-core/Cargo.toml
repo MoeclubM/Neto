@@ -17,4 +17,6 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 webpki-roots.workspace = true

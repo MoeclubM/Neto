@@ -3,19 +3,23 @@ mod imp {
     use anyhow::{Result, bail};
     use neto_core::PlatformHooks;
     use std::ffi::OsStr;
+    use std::net::{SocketAddr, TcpStream};
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::process::CommandExt;
     use std::ptr::{null, null_mut};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use windows_sys::Win32::Foundation::{
         CloseHandle, ERROR_CANCELLED, ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SUCCESS, GetLastError,
         HANDLE, WAIT_OBJECT_0,
     };
     use windows_sys::Win32::Networking::WinInet::{
         INTERNET_OPTION_PER_CONNECTION_OPTION, INTERNET_OPTION_REFRESH,
-        INTERNET_OPTION_SETTINGS_CHANGED, INTERNET_PER_CONN_FLAGS, INTERNET_PER_CONN_OPTION_LISTW,
-        INTERNET_PER_CONN_OPTIONW, INTERNET_PER_CONN_OPTIONW_0, INTERNET_PER_CONN_PROXY_BYPASS,
-        INTERNET_PER_CONN_PROXY_SERVER, InternetSetOptionW, PROXY_TYPE_DIRECT, PROXY_TYPE_PROXY,
+        INTERNET_OPTION_SETTINGS_CHANGED, INTERNET_PER_CONN_AUTOCONFIG_URL,
+        INTERNET_PER_CONN_FLAGS, INTERNET_PER_CONN_OPTION_LISTW, INTERNET_PER_CONN_OPTIONW,
+        INTERNET_PER_CONN_OPTIONW_0, INTERNET_PER_CONN_PROXY_BYPASS,
+        INTERNET_PER_CONN_PROXY_SERVER, InternetSetOptionW, PROXY_TYPE_AUTO_DETECT,
+        PROXY_TYPE_AUTO_PROXY_URL, PROXY_TYPE_DIRECT, PROXY_TYPE_PROXY,
     };
     use windows_sys::Win32::Security::{
         GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
@@ -40,17 +44,20 @@ mod imp {
     const INTERNET_SETTINGS_KEY: &str =
         r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
     const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-    const BACKUP_VALUE_NAMES: &[&str] = &[
-        "ProxyEnable",
-        "ProxyServer",
-        "ProxyOverride",
-        "AutoConfigURL",
-        "AutoDetect",
-    ];
-    const CONNECTION_VALUE_NAMES: &[&str] = &["DefaultConnectionSettings", "SavedLegacySettings"];
+
+    #[derive(Default)]
+    struct ProxyRegistrySnapshot {
+        enable: Option<u32>,
+        server: Option<String>,
+        bypass: Option<String>,
+        auto_config_url: Option<String>,
+        auto_detect: Option<u32>,
+        owned_endpoint: Option<String>,
+    }
 
     pub struct WindowsPlatformHooks {
         app_id: String,
+        active_endpoint: Mutex<Option<String>>,
     }
 
     impl WindowsPlatformHooks {
@@ -61,8 +68,11 @@ mod imp {
             } else {
                 raw.trim().to_string()
             };
-            let hooks = Self { app_id: cleaned };
-            let _ = restore_backed_up_proxy(&hooks.backup_key_path());
+            let hooks = Self {
+                app_id: cleaned,
+                active_endpoint: Mutex::new(None),
+            };
+            let _ = restore_or_disable_proxy(&hooks.backup_key_path(), None);
             Arc::new(hooks)
         }
 
@@ -83,14 +93,61 @@ mod imp {
             _socks_port: u16,
             bypass: &str,
         ) -> Result<()> {
-            backup_current_proxy_if_needed(&self.backup_key_path())?;
+            let endpoint = format!("{host}:{http_port}");
+            backup_current_proxy_if_needed(&self.backup_key_path(), &endpoint)?;
             let server = format!("http={host}:{http_port};https={host}:{http_port}");
             apply_wininet_proxy(&server, bypass)?;
+            *self
+                .active_endpoint
+                .lock()
+                .expect("active_endpoint lock poisoned") = Some(endpoint);
             Ok(())
         }
 
         fn clear_system_proxy(&self) -> Result<()> {
-            restore_backed_up_proxy(&self.backup_key_path())
+            let owned = self
+                .active_endpoint
+                .lock()
+                .expect("active_endpoint lock poisoned")
+                .take();
+            restore_or_disable_proxy(&self.backup_key_path(), owned.as_deref())
+        }
+
+        fn cleanup_system_proxy_on_exit(
+            &self,
+            local_ports: &[u16],
+            force_clear: bool,
+        ) -> Result<()> {
+            let owned = self
+                .active_endpoint
+                .lock()
+                .expect("active_endpoint lock poisoned")
+                .take();
+            let backup_path = self.backup_key_path();
+            if force_clear || owned.is_some() || has_reg_subkey(&backup_path) {
+                let _ = restore_or_disable_proxy(&backup_path, owned.as_deref());
+            }
+            let current = read_proxy_snapshot(INTERNET_SETTINGS_KEY);
+            if current.enable.unwrap_or(0) != 0 {
+                let cur_srv = current.server.as_deref().unwrap_or_default();
+                let should_disable = cur_srv.trim().is_empty()
+                    || owned
+                        .as_deref()
+                        .is_some_and(|ep| server_mentions_endpoint(cur_srv, ep))
+                    || local_ports.iter().copied().filter(|&p| p > 0).any(|port| {
+                        let ep = format!("127.0.0.1:{port}");
+                        server_mentions_endpoint(cur_srv, &ep)
+                            && (force_clear || !can_connect_loopback(port))
+                    });
+                if should_disable {
+                    disable_wininet_proxy(
+                        current.bypass.as_deref(),
+                        current.auto_config_url.as_deref(),
+                        current.auto_detect,
+                    )?;
+                }
+            }
+            Ok(())
         }
 
         fn set_autostart(&self, enabled: bool) -> Result<()> {
@@ -280,6 +337,97 @@ mod imp {
         Ok(())
     }
 
+    fn disable_wininet_proxy(
+        bypass: Option<&str>,
+        pac_url: Option<&str>,
+        auto_detect: Option<u32>,
+    ) -> Result<()> {
+        let mut empty_server_w = wide_null("");
+        let mut bypass_w = wide_null(bypass.unwrap_or(""));
+        let clean_pac = pac_url.map(str::trim).filter(|s| !s.is_empty());
+        let mut pac_w = wide_null(clean_pac.unwrap_or(""));
+
+        let mut flags = PROXY_TYPE_DIRECT;
+        if clean_pac.is_some() {
+            flags |= PROXY_TYPE_AUTO_PROXY_URL;
+        }
+        if auto_detect.unwrap_or(0) != 0 {
+            flags |= PROXY_TYPE_AUTO_DETECT;
+        }
+
+        let mut options = Vec::with_capacity(4);
+        options.push(INTERNET_PER_CONN_OPTIONW {
+            dwOption: INTERNET_PER_CONN_FLAGS,
+            Value: INTERNET_PER_CONN_OPTIONW_0 { dwValue: flags },
+        });
+        options.push(INTERNET_PER_CONN_OPTIONW {
+            dwOption: INTERNET_PER_CONN_PROXY_SERVER,
+            Value: INTERNET_PER_CONN_OPTIONW_0 {
+                pszValue: empty_server_w.as_mut_ptr(),
+            },
+        });
+        options.push(INTERNET_PER_CONN_OPTIONW {
+            dwOption: INTERNET_PER_CONN_PROXY_BYPASS,
+            Value: INTERNET_PER_CONN_OPTIONW_0 {
+                pszValue: bypass_w.as_mut_ptr(),
+            },
+        });
+        if clean_pac.is_some() {
+            options.push(INTERNET_PER_CONN_OPTIONW {
+                dwOption: INTERNET_PER_CONN_AUTOCONFIG_URL,
+                Value: INTERNET_PER_CONN_OPTIONW_0 {
+                    pszValue: pac_w.as_mut_ptr(),
+                },
+            });
+        }
+
+        let mut list = INTERNET_PER_CONN_OPTION_LISTW {
+            dwSize: size_of::<INTERNET_PER_CONN_OPTION_LISTW>() as u32,
+            pszConnection: null_mut(),
+            dwOptionCount: options.len() as u32,
+            dwOptionError: 0,
+            pOptions: options.as_mut_ptr(),
+        };
+
+        unsafe {
+            let _ = InternetSetOptionW(
+                null(),
+                INTERNET_OPTION_PER_CONNECTION_OPTION,
+                &mut list as *mut _ as *const _,
+                list.dwSize,
+            );
+
+            let settings_w = wide_null(INTERNET_SETTINGS_KEY);
+            let mut settings_key: HKEY = null_mut();
+            if RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                settings_w.as_ptr(),
+                0,
+                null(),
+                0,
+                KEY_ALL_ACCESS,
+                null(),
+                &mut settings_key,
+                null_mut(),
+            ) == ERROR_SUCCESS
+            {
+                write_reg_dword(settings_key, "ProxyEnable", 0);
+                delete_reg_value(settings_key, "ProxyServer");
+                if let Some(ov) = bypass.filter(|s| !s.is_empty()) {
+                    write_reg_sz(settings_key, "ProxyOverride", ov);
+                }
+                if let Some(pac) = clean_pac {
+                    write_reg_sz(settings_key, "AutoConfigURL", pac);
+                } else {
+                    delete_reg_value(settings_key, "AutoConfigURL");
+                }
+                RegCloseKey(settings_key);
+            }
+            refresh_wininet()?;
+        }
+        Ok(())
+    }
+
     unsafe fn refresh_wininet() -> Result<()> {
         unsafe {
             if InternetSetOptionW(null(), INTERNET_OPTION_SETTINGS_CHANGED, null(), 0) == 0
@@ -291,21 +439,122 @@ mod imp {
         Ok(())
     }
 
-    fn backup_current_proxy_if_needed(backup_subkey: &str) -> Result<()> {
+    fn parse_proxy_segment_host_port(seg: &str) -> Option<(&str, u16)> {
+        let mut s = seg.trim();
+        if s.is_empty() {
+            return None;
+        }
+        if let Some((_, rhs)) = s.split_once('=') {
+            s = rhs.trim();
+        }
+        if let Some((_, rhs)) = s.split_once("://") {
+            s = rhs.trim();
+        }
+        s = s.split('/').next().unwrap_or(s).trim();
+        if let Some(rest) = s.strip_prefix('[') {
+            let (host, after) = rest.split_once(']')?;
+            let port_str = after.strip_prefix(':')?;
+            let port = port_str.parse::<u16>().ok()?;
+            return Some((host, port));
+        }
+        let (host, port_str) = s.rsplit_once(':')?;
+        let port = port_str.parse::<u16>().ok()?;
+        Some((host.trim(), port))
+    }
+
+    fn is_loopback_host(host: &str) -> bool {
+        host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+    }
+
+    fn can_connect_loopback(port: u16) -> bool {
+        if port == 0 {
+            return false;
+        }
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        TcpStream::connect_timeout(&addr, Duration::from_millis(25)).is_ok()
+    }
+
+    fn server_mentions_endpoint(server: &str, endpoint: &str) -> bool {
+        let Some((target_host, target_port)) = parse_proxy_segment_host_port(endpoint) else {
+            return false;
+        };
+        let target_is_loopback = is_loopback_host(target_host);
+        server
+            .split([';', ','])
+            .filter_map(parse_proxy_segment_host_port)
+            .any(|(h, p)| {
+                p == target_port
+                    && (h.eq_ignore_ascii_case(target_host)
+                        || (target_is_loopback && is_loopback_host(h)))
+            })
+    }
+
+    fn is_stale_or_owned_proxy(server: &str, owned_endpoint: Option<&str>) -> bool {
+        let trimmed = server.trim();
+        if trimmed.is_empty() {
+            return true;
+        }
+        if let Some(ep) = owned_endpoint
+            && server_mentions_endpoint(trimmed, ep)
+        {
+            return true;
+        }
+        let segments: Vec<(&str, u16)> = trimmed
+            .split([';', ','])
+            .filter_map(parse_proxy_segment_host_port)
+            .collect();
+        if segments.is_empty() {
+            return false;
+        }
+        segments
+            .iter()
+            .all(|(h, port)| is_loopback_host(h) && !can_connect_loopback(*port))
+    }
+
+    fn has_reg_subkey(subkey: &str) -> bool {
+        unsafe {
+            let w = wide_null(subkey);
+            let mut key: HKEY = null_mut();
+            if RegOpenKeyExW(HKEY_CURRENT_USER, w.as_ptr(), 0, KEY_READ, &mut key) == ERROR_SUCCESS
+            {
+                RegCloseKey(key);
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    fn read_proxy_snapshot(subkey: &str) -> ProxyRegistrySnapshot {
+        let mut snap = ProxyRegistrySnapshot::default();
+        unsafe {
+            let w = wide_null(subkey);
+            let mut key: HKEY = null_mut();
+            if RegOpenKeyExW(HKEY_CURRENT_USER, w.as_ptr(), 0, KEY_READ, &mut key) != ERROR_SUCCESS
+            {
+                return snap;
+            }
+            snap.enable = read_reg_dword(key, "ProxyEnable");
+            snap.server = read_reg_sz(key, "ProxyServer");
+            snap.bypass = read_reg_sz(key, "ProxyOverride");
+            snap.auto_config_url = read_reg_sz(key, "AutoConfigURL");
+            snap.auto_detect = read_reg_dword(key, "AutoDetect");
+            snap.owned_endpoint = read_reg_sz(key, "OwnedEndpoint");
+            RegCloseKey(key);
+        }
+        snap
+    }
+
+    fn backup_current_proxy_if_needed(backup_subkey: &str, owned_endpoint: &str) -> Result<()> {
+        let already_exists = has_reg_subkey(backup_subkey);
+        let current = if !already_exists {
+            Some(read_proxy_snapshot(INTERNET_SETTINGS_KEY))
+        } else {
+            None
+        };
+
         unsafe {
             let backup_w = wide_null(backup_subkey);
-            let mut existing: HKEY = null_mut();
-            if RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                backup_w.as_ptr(),
-                0,
-                KEY_READ,
-                &mut existing,
-            ) == ERROR_SUCCESS
-            {
-                RegCloseKey(existing);
-                return Ok(());
-            }
             let mut backup_key: HKEY = null_mut();
             if RegCreateKeyExW(
                 HKEY_CURRENT_USER,
@@ -322,143 +571,161 @@ mod imp {
                 bail!("create Windows proxy backup registry key failed");
             }
 
-            let settings_w = wide_null(INTERNET_SETTINGS_KEY);
-            let mut settings_key: HKEY = null_mut();
-            if RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                settings_w.as_ptr(),
-                0,
-                KEY_READ,
-                &mut settings_key,
-            ) == ERROR_SUCCESS
-            {
-                for name in BACKUP_VALUE_NAMES {
-                    copy_reg_value(settings_key, name, backup_key, name);
+            if let Some(cur) = current {
+                let cur_srv = cur.server.as_deref().unwrap_or_default();
+                let keep_external = cur.enable.unwrap_or(0) != 0
+                    && !is_stale_or_owned_proxy(cur_srv, Some(owned_endpoint));
+                if keep_external {
+                    write_reg_dword(backup_key, "ProxyEnable", 1);
+                    write_reg_sz(backup_key, "ProxyServer", cur_srv);
+                } else {
+                    write_reg_dword(backup_key, "ProxyEnable", 0);
+                    delete_reg_value(backup_key, "ProxyServer");
                 }
-                RegCloseKey(settings_key);
+                if let Some(ov) = cur.bypass.as_deref().filter(|s| !s.is_empty()) {
+                    write_reg_sz(backup_key, "ProxyOverride", ov);
+                }
+                if let Some(pac) = cur.auto_config_url.as_deref().filter(|s| !s.is_empty()) {
+                    write_reg_sz(backup_key, "AutoConfigURL", pac);
+                }
+                if let Some(ad) = cur.auto_detect {
+                    write_reg_dword(backup_key, "AutoDetect", ad);
+                }
             }
 
-            let conn_w = wide_null(&format!(r"{INTERNET_SETTINGS_KEY}\Connections"));
-            let mut conn_key: HKEY = null_mut();
-            if RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                conn_w.as_ptr(),
-                0,
-                KEY_READ,
-                &mut conn_key,
-            ) == ERROR_SUCCESS
-            {
-                for name in CONNECTION_VALUE_NAMES {
-                    copy_reg_value(conn_key, name, backup_key, &format!("Connection.{name}"));
-                }
-                RegCloseKey(conn_key);
-            }
-            let marker_name = wide_null("BackedUp");
-            let marker_val = 1u32;
-            let _ = RegSetValueExW(
-                backup_key,
-                marker_name.as_ptr(),
-                0,
-                REG_DWORD,
-                &marker_val as *const _ as *const u8,
-                4,
-            );
+            write_reg_sz(backup_key, "OwnedEndpoint", owned_endpoint);
+            write_reg_dword(backup_key, "BackedUp", 1);
             RegCloseKey(backup_key);
         }
         Ok(())
     }
 
-    fn restore_backed_up_proxy(backup_subkey: &str) -> Result<()> {
-        unsafe {
+    fn restore_or_disable_proxy(backup_subkey: &str, owned_mem: Option<&str>) -> Result<()> {
+        if has_reg_subkey(backup_subkey) {
+            let backed = read_proxy_snapshot(backup_subkey);
             let backup_w = wide_null(backup_subkey);
-            let mut backup_key: HKEY = null_mut();
-            if RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                backup_w.as_ptr(),
-                0,
-                KEY_READ,
-                &mut backup_key,
-            ) != ERROR_SUCCESS
-            {
-                return Ok(());
+            unsafe {
+                let _ = RegDeleteTreeW(HKEY_CURRENT_USER, backup_w.as_ptr());
             }
-            let settings_w = wide_null(INTERNET_SETTINGS_KEY);
-            let mut settings_key: HKEY = null_mut();
-            if RegCreateKeyExW(
-                HKEY_CURRENT_USER,
-                settings_w.as_ptr(),
-                0,
-                null(),
-                0,
-                KEY_ALL_ACCESS,
-                null(),
-                &mut settings_key,
-                null_mut(),
-            ) == ERROR_SUCCESS
+            let effective_owned = owned_mem.or(backed.owned_endpoint.as_deref());
+            let backed_srv = backed.server.as_deref().unwrap_or_default();
+            if backed.enable.unwrap_or(0) != 0
+                && !is_stale_or_owned_proxy(backed_srv, effective_owned)
             {
-                for name in BACKUP_VALUE_NAMES {
-                    if !copy_reg_value(backup_key, name, settings_key, name) {
-                        let nw = wide_null(name);
-                        let _ = RegDeleteValueW(settings_key, nw.as_ptr());
-                    }
-                }
-                RegCloseKey(settings_key);
+                apply_wininet_proxy(backed_srv, backed.bypass.as_deref().unwrap_or(""))?;
+            } else {
+                disable_wininet_proxy(
+                    backed.bypass.as_deref(),
+                    backed.auto_config_url.as_deref(),
+                    backed.auto_detect,
+                )?;
             }
+            return Ok(());
+        }
 
-            let conn_w = wide_null(&format!(r"{INTERNET_SETTINGS_KEY}\Connections"));
-            let mut conn_key: HKEY = null_mut();
-            if RegCreateKeyExW(
-                HKEY_CURRENT_USER,
-                conn_w.as_ptr(),
-                0,
-                null(),
-                0,
-                KEY_ALL_ACCESS,
-                null(),
-                &mut conn_key,
-                null_mut(),
-            ) == ERROR_SUCCESS
+        if let Some(ep) = owned_mem {
+            let cur = read_proxy_snapshot(INTERNET_SETTINGS_KEY);
+            let cur_srv = cur.server.as_deref().unwrap_or_default();
+            if cur.enable.unwrap_or(0) != 0
+                && (cur_srv.trim().is_empty() || server_mentions_endpoint(cur_srv, ep))
             {
-                for name in CONNECTION_VALUE_NAMES {
-                    if !copy_reg_value(backup_key, &format!("Connection.{name}"), conn_key, name) {
-                        let nw = wide_null(name);
-                        let _ = RegDeleteValueW(conn_key, nw.as_ptr());
-                    }
-                }
-                RegCloseKey(conn_key);
+                disable_wininet_proxy(
+                    cur.bypass.as_deref(),
+                    cur.auto_config_url.as_deref(),
+                    cur.auto_detect,
+                )?;
             }
-
-            RegCloseKey(backup_key);
-            let _ = RegDeleteTreeW(HKEY_CURRENT_USER, backup_w.as_ptr());
-            refresh_wininet()?;
         }
         Ok(())
     }
 
-    unsafe fn copy_reg_value(src: HKEY, src_name: &str, dst: HKEY, dst_name: &str) -> bool {
+    unsafe fn read_reg_dword(key: HKEY, name: &str) -> Option<u32> {
         unsafe {
-            let src_w = wide_null(src_name);
+            let nw = wide_null(name);
+            let mut kind = 0u32;
+            let mut val = 0u32;
+            let mut len = 4u32;
+            if RegQueryValueExW(
+                key,
+                nw.as_ptr(),
+                null(),
+                &mut kind,
+                &mut val as *mut _ as *mut u8,
+                &mut len,
+            ) == ERROR_SUCCESS
+                && kind == REG_DWORD
+            {
+                Some(val)
+            } else {
+                None
+            }
+        }
+    }
+
+    unsafe fn read_reg_sz(key: HKEY, name: &str) -> Option<String> {
+        unsafe {
+            let nw = wide_null(name);
             let mut kind = 0u32;
             let mut len = 0u32;
-            if RegQueryValueExW(src, src_w.as_ptr(), null(), &mut kind, null_mut(), &mut len)
+            if RegQueryValueExW(key, nw.as_ptr(), null(), &mut kind, null_mut(), &mut len)
                 != ERROR_SUCCESS
+                || kind != REG_SZ
+                || len < 2
             {
-                return false;
+                return None;
             }
             let mut buf = vec![0u8; len as usize];
             if RegQueryValueExW(
-                src,
-                src_w.as_ptr(),
+                key,
+                nw.as_ptr(),
                 null(),
                 &mut kind,
                 buf.as_mut_ptr(),
                 &mut len,
             ) != ERROR_SUCCESS
             {
-                return false;
+                return None;
             }
-            let dst_w = wide_null(dst_name);
-            RegSetValueExW(dst, dst_w.as_ptr(), 0, kind, buf.as_ptr(), len) == ERROR_SUCCESS
+            let u16_len = (len as usize) / 2;
+            let slice = std::slice::from_raw_parts(buf.as_ptr() as *const u16, u16_len);
+            let end = slice.iter().position(|&c| c == 0).unwrap_or(slice.len());
+            Some(String::from_utf16_lossy(&slice[..end]))
+        }
+    }
+
+    unsafe fn write_reg_dword(key: HKEY, name: &str, val: u32) {
+        unsafe {
+            let nw = wide_null(name);
+            let _ = RegSetValueExW(
+                key,
+                nw.as_ptr(),
+                0,
+                REG_DWORD,
+                &val as *const _ as *const u8,
+                4,
+            );
+        }
+    }
+
+    unsafe fn write_reg_sz(key: HKEY, name: &str, val: &str) {
+        unsafe {
+            let nw = wide_null(name);
+            let vw = wide_null(val);
+            let _ = RegSetValueExW(
+                key,
+                nw.as_ptr(),
+                0,
+                REG_SZ,
+                vw.as_ptr() as *const u8,
+                (vw.len() * 2) as u32,
+            );
+        }
+    }
+
+    unsafe fn delete_reg_value(key: HKEY, name: &str) {
+        unsafe {
+            let nw = wide_null(name);
+            let _ = RegDeleteValueW(key, nw.as_ptr());
         }
     }
 

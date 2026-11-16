@@ -10,10 +10,13 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context as TaskContext, Poll};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
+
+const TRACKED_UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub type RouteMatchFn =
     Arc<dyn Fn(&ProxyTarget, RouteNetwork) -> (String, String) + Send + Sync + 'static>;
@@ -481,11 +484,13 @@ async fn handle_tracked_socks_client(
 
             let mut upstream = TcpStream::connect(inner_socks).await?;
             let _ = upstream.set_nodelay(true);
-            upstream.write_all(&[0x05, 0x01, 0x00]).await?;
+            let mut pipelined = Vec::with_capacity(3 + raw_req.len());
+            pipelined.extend_from_slice(&[0x05, 0x01, 0x00]);
+            pipelined.extend_from_slice(&raw_req);
+            upstream.write_all(&pipelined).await?;
             let mut up_greet = [0u8; 2];
             upstream.read_exact(&mut up_greet).await?;
             ensure!(up_greet == [0x05, 0x00], "inner SOCKS5 greeting rejected");
-            upstream.write_all(&raw_req).await?;
             let (rep, _, raw_reply) = read_socks5_reply(&mut upstream).await?;
             client.write_all(&raw_reply).await?;
             if rep != 0x00 {
@@ -505,16 +510,15 @@ async fn handle_tracked_socks_client(
         0x03 => {
             let mut upstream_ctrl = TcpStream::connect(inner_socks).await?;
             let _ = upstream_ctrl.set_nodelay(true);
-            upstream_ctrl.write_all(&[0x05, 0x01, 0x00]).await?;
+            upstream_ctrl
+                .write_all(&[0x05, 0x01, 0x00, 0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await?;
             let mut up_greet = [0u8; 2];
             upstream_ctrl.read_exact(&mut up_greet).await?;
             ensure!(
                 up_greet == [0x05, 0x00],
                 "inner SOCKS5 UDP greeting rejected"
             );
-            upstream_ctrl
-                .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
-                .await?;
             let (rep, mut up_udp_addr, raw_reply) = read_socks5_reply(&mut upstream_ctrl).await?;
             if rep != 0x00 {
                 let _ = client.write_all(&raw_reply).await;
@@ -525,7 +529,9 @@ async fn handle_tracked_socks_client(
             }
 
             let client_udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+            let _ = aerion::disable_windows_udp_connreset(&client_udp);
             let relay_udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+            let _ = aerion::disable_windows_udp_connreset(&relay_udp);
             relay_udp.connect(up_udp_addr).await?;
             let local_port = client_udp.local_addr()?.port();
             let mut reply = [0x05u8, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 0];
@@ -548,10 +554,13 @@ async fn handle_tracked_socks_client(
             let mut rbuf = vec![0u8; 65535];
             let mut client_peer: Option<SocketAddr> = None;
             let mut target_updated = false;
+            let idle_sleep = tokio::time::sleep(TRACKED_UDP_IDLE_TIMEOUT);
+            tokio::pin!(idle_sleep);
 
             loop {
                 tokio::select! {
                     _ = cancel_rx.changed() => break,
+                    _ = &mut idle_sleep => break,
                     r = client.read(&mut c_ctrl_buf) => {
                         if matches!(r, Ok(0) | Err(_)) {
                             break;
@@ -562,31 +571,43 @@ async fn handle_tracked_socks_client(
                             break;
                         }
                     }
-                    Ok((n, peer)) = client_udp.recv_from(&mut cbuf) => {
-                        client_peer = Some(peer);
-                        if let Some((dst, hdr_len)) = parse_socks5_udp_header(&cbuf[..n]) {
-                            if !target_updated {
-                                let (rule, out) = matcher(&dst, RouteNetwork::Udp);
-                                if let Ok(mut meta) = guard.entry.meta.lock() {
-                                    *meta = (format_proxy_target(&dst), rule, out);
+                    recv_res = client_udp.recv_from(&mut cbuf) => {
+                        match recv_res {
+                            Ok((n, peer)) => {
+                                idle_sleep.as_mut().reset(tokio::time::Instant::now() + TRACKED_UDP_IDLE_TIMEOUT);
+                                client_peer = Some(peer);
+                                if let Some((dst, hdr_len)) = parse_socks5_udp_header(&cbuf[..n]) {
+                                    if !target_updated {
+                                        let (rule, out) = matcher(&dst, RouteNetwork::Udp);
+                                        if let Ok(mut meta) = guard.entry.meta.lock() {
+                                            *meta = (format_proxy_target(&dst), rule, out);
+                                        }
+                                        target_updated = true;
+                                    }
+                                    let payload = n.saturating_sub(hdr_len) as u64;
+                                    guard.entry.upload_bytes.fetch_add(payload, Ordering::Relaxed);
+                                    SESSION_UPLOAD_BYTES.fetch_add(payload, Ordering::Relaxed);
                                 }
-                                target_updated = true;
+                                let _ = relay_udp.send(&cbuf[..n]).await;
                             }
-                            let payload = n.saturating_sub(hdr_len) as u64;
-                            guard.entry.upload_bytes.fetch_add(payload, Ordering::Relaxed);
-                            SESSION_UPLOAD_BYTES.fetch_add(payload, Ordering::Relaxed);
+                            Err(_) => break,
                         }
-                        let _ = relay_udp.send(&cbuf[..n]).await;
                     }
-                    Ok(n) = relay_udp.recv(&mut rbuf) => {
-                        if let Some(peer) = client_peer {
-                            let hdr_len = parse_socks5_udp_header(&rbuf[..n])
-                                .map(|(_, l)| l)
-                                .unwrap_or(10);
-                            let payload = n.saturating_sub(hdr_len) as u64;
-                            guard.entry.download_bytes.fetch_add(payload, Ordering::Relaxed);
-                            SESSION_DOWNLOAD_BYTES.fetch_add(payload, Ordering::Relaxed);
-                            let _ = client_udp.send_to(&rbuf[..n], peer).await;
+                    recv_res = relay_udp.recv(&mut rbuf) => {
+                        match recv_res {
+                            Ok(n) => {
+                                idle_sleep.as_mut().reset(tokio::time::Instant::now() + TRACKED_UDP_IDLE_TIMEOUT);
+                                if let Some(peer) = client_peer {
+                                    let hdr_len = parse_socks5_udp_header(&rbuf[..n])
+                                        .map(|(_, l)| l)
+                                        .unwrap_or(10);
+                                    let payload = n.saturating_sub(hdr_len) as u64;
+                                    guard.entry.download_bytes.fetch_add(payload, Ordering::Relaxed);
+                                    SESSION_DOWNLOAD_BYTES.fetch_add(payload, Ordering::Relaxed);
+                                    let _ = client_udp.send_to(&rbuf[..n], peer).await;
+                                }
+                            }
+                            Err(_) => break,
                         }
                     }
                 }

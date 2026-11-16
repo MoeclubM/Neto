@@ -114,6 +114,15 @@ public sealed class NetoProxyGroup
         "load-balance" => "负载均衡",
         _ => "手动选择",
     };
+
+    [JsonIgnore]
+    public string ShortTypeLabel => GroupType.ToLowerInvariant() switch
+    {
+        "url-test" => "自动",
+        "fallback" => "容灾",
+        "load-balance" => "均衡",
+        _ => "手动",
+    };
 }
 
 public sealed class NetoActiveConnection
@@ -199,6 +208,7 @@ public sealed class NetoSnapshot
     [JsonPropertyName("nodes_testing")] public bool NodesTesting { get; set; }
     [JsonPropertyName("nodes")] public List<NetoNodeItem> Nodes { get; set; } = [];
     [JsonPropertyName("proxy_groups")] public List<NetoProxyGroup> ProxyGroups { get; set; } = [];
+    [JsonPropertyName("primary_group_name")] public string? PrimaryGroupName { get; set; }
     [JsonPropertyName("rule_count")] public int RuleCount { get; set; }
     [JsonPropertyName("rules_preview")] public List<string> RulesPreview { get; set; } = [];
     [JsonPropertyName("telemetry")] public NetoTelemetry Telemetry { get; set; } = new();
@@ -211,6 +221,63 @@ public sealed class NetoSnapshot
     [JsonIgnore]
     public NetoProfileBrief? ActiveProfile =>
         Profiles.FirstOrDefault(p => p.Active) ?? Profiles.FirstOrDefault();
+
+    [JsonIgnore]
+    public NetoProxyGroup? PrimarySelectGroup =>
+        (!string.IsNullOrWhiteSpace(PrimaryGroupName)
+            ? ProxyGroups.FirstOrDefault(g => g.Name == PrimaryGroupName)
+            : null)
+        ?? ProxyGroups.FirstOrDefault(g =>
+            g.IsManualSelect &&
+            (g.Name is "代理选择" or "节点选择" or "Proxy" or "PROXY" or "PassGFW" or "🚀 节点选择" ||
+             g.Name.Contains("节点选择", StringComparison.Ordinal) ||
+             g.Name.Contains("代理选择", StringComparison.Ordinal)))
+        ?? ProxyGroups.FirstOrDefault(g => g.IsManualSelect)
+        ?? ProxyGroups.FirstOrDefault();
+
+    public string? ResolveGroupLeafTarget(string groupName)
+    {
+        var cur = (groupName ?? "").Trim();
+        if (string.IsNullOrEmpty(cur)) return null;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < 16; i++)
+        {
+            if (cur.Equals("DIRECT", StringComparison.OrdinalIgnoreCase)) return "DIRECT";
+            if (cur.Equals("REJECT", StringComparison.OrdinalIgnoreCase) ||
+                cur.Equals("REJECT-DROP", StringComparison.OrdinalIgnoreCase)) return "REJECT";
+            if (!seen.Add(cur)) return null;
+            var grp = ProxyGroups.FirstOrDefault(g => g.Name == cur);
+            if (grp == null) return cur;
+            var next = grp.Now ?? grp.Selected ?? grp.Proxies.FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(next)) return null;
+            cur = next.Trim();
+        }
+        return cur;
+    }
+
+    [JsonIgnore]
+    public NetoNodeItem? EffectiveActiveNode
+    {
+        get
+        {
+            if (string.Equals(Settings.RoutingMode, "direct", StringComparison.OrdinalIgnoreCase))
+                return null;
+            if (string.Equals(Settings.RoutingMode, "rule", StringComparison.OrdinalIgnoreCase) &&
+                PrimarySelectGroup is { } primary)
+            {
+                var leaf = ResolveGroupLeafTarget(primary.Name);
+                if (string.Equals(leaf, "DIRECT", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(leaf, "REJECT", StringComparison.OrdinalIgnoreCase))
+                    return null;
+                if (!string.IsNullOrEmpty(leaf))
+                {
+                    var matched = Nodes.FirstOrDefault(n => n.Name == leaf);
+                    if (matched != null) return matched;
+                }
+            }
+            return SelectedNode;
+        }
+    }
 }
 
 public sealed class NetoLogEntry
@@ -263,6 +330,86 @@ public sealed class NetoUpdateProgress
 
 public static class NetoFormat
 {
+    private static readonly string[] InfoPseudoKeywords =
+    [
+        "剩余流量",
+        "距离下次重置",
+        "套餐到期",
+        "到期时间",
+        "有效期限",
+        "流量剩余",
+        "已用流量",
+        "总流量",
+        "官网：",
+        "官网:",
+        "网址：",
+        "网址:",
+        "Traffic:",
+        "Expire:",
+    ];
+
+    public static bool IsInfoPseudoNode(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        var s = name.Trim();
+        foreach (var kw in InfoPseudoKeywords)
+        {
+            if (s.StartsWith(kw, StringComparison.OrdinalIgnoreCase) ||
+                s.Contains(kw, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static string FormatDisplayName(string? raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return "";
+        var sb = new System.Text.StringBuilder(raw.Length);
+        var i = 0;
+        while (i < raw.Length)
+        {
+            if (i + 3 < raw.Length &&
+                raw[i] == '\uD83C' && raw[i + 1] is >= '\uDDE6' and <= '\uDDFF' &&
+                raw[i + 2] == '\uD83C' && raw[i + 3] is >= '\uDDE6' and <= '\uDDFF')
+            {
+                var c1 = (char)('A' + (raw[i + 1] - '\uDDE6'));
+                var c2 = (char)('A' + (raw[i + 3] - '\uDDE6'));
+                i += 4;
+                var j = i;
+                while (j < raw.Length && raw[j] == ' ') j++;
+                var hasDuplicateCode = false;
+                if (j + 1 < raw.Length &&
+                    char.IsAsciiLetter(raw[j]) &&
+                    char.IsAsciiLetter(raw[j + 1]) &&
+                    (j + 2 >= raw.Length || !char.IsAsciiLetter(raw[j + 2])))
+                {
+                    var a1 = char.ToUpperInvariant(raw[j]);
+                    var a2 = char.ToUpperInvariant(raw[j + 1]);
+                    if ((a1 == c1 && a2 == c2) || (c1 == 'G' && c2 == 'B' && a1 == 'U' && a2 == 'K'))
+                    {
+                        hasDuplicateCode = true;
+                        i = j;
+                    }
+                }
+                if (!hasDuplicateCode)
+                {
+                    sb.Append(c1);
+                    sb.Append(c2);
+                    if (i < raw.Length && raw[i] != ' ' && raw[i] != '-' && raw[i] != '_' && raw[i] != '·')
+                    {
+                        sb.Append(' ');
+                    }
+                }
+                continue;
+            }
+            sb.Append(raw[i]);
+            i++;
+        }
+        return sb.ToString();
+    }
+
     public static string FormatBytes(ulong bytes)
     {
         const double kb = 1024.0;

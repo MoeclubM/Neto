@@ -157,6 +157,37 @@ pub fn protocol_display_label(proto: &str) -> String {
     }
 }
 
+pub fn is_info_pseudo_node(name: &str) -> bool {
+    let s = name.trim();
+    const KEYWORDS: &[&str] = &[
+        "剩余流量",
+        "距离下次重置",
+        "套餐到期",
+        "到期时间",
+        "有效期限",
+        "流量剩余",
+        "已用流量",
+        "总流量",
+        "官网：",
+        "官网:",
+        "网址：",
+        "网址:",
+        "Traffic:",
+        "Expire:",
+    ];
+    KEYWORDS
+        .iter()
+        .any(|kw| s.starts_with(kw) || s.contains(kw))
+}
+
+pub fn first_preferred_node_index(nodes: &[NodeSummary]) -> usize {
+    nodes
+        .iter()
+        .position(|n| n.supported && !is_info_pseudo_node(&n.name))
+        .or_else(|| nodes.iter().position(|n| n.supported))
+        .unwrap_or(0)
+}
+
 fn strip_ipv6_brackets(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.len() > 2 && trimmed.starts_with('[') && trimmed.ends_with(']') {
@@ -749,7 +780,11 @@ fn extract_proxy_groups_from_mapping(
                 insert_before_trailing_builtins(&mut cleaned, extra);
             }
             if !cleaned.is_empty() {
-                let selected = cleaned.first().cloned();
+                let selected = cleaned
+                    .iter()
+                    .find(|p| !is_info_pseudo_node(p))
+                    .or_else(|| cleaned.first())
+                    .cloned();
                 proxy_groups.push(ProxyGroupSummary {
                     name: spec.name,
                     group_type: spec.group_type,
@@ -909,6 +944,16 @@ pub fn find_primary_select_group_index(
     groups: &[ProxyGroupSummary],
     rules: Option<&[String]>,
 ) -> Option<usize> {
+    if let Some(named_idx) = groups.iter().position(|g| {
+        g.group_type.eq_ignore_ascii_case("select")
+            && (matches!(
+                g.name.as_str(),
+                "代理选择" | "节点选择" | "Proxy" | "PROXY" | "PassGFW" | "🚀 节点选择"
+            ) || g.name.contains("节点选择")
+                || g.name.contains("代理选择"))
+    }) {
+        return Some(named_idx);
+    }
     if let Some(rules) = rules {
         for rule in rules.iter().rev() {
             if rule.trim_start().to_ascii_uppercase().starts_with("MATCH,")
@@ -917,24 +962,20 @@ pub fn find_primary_select_group_index(
                     .iter()
                     .position(|g| g.group_type.eq_ignore_ascii_case("select") && g.name == action)
             {
+                if let Some(first_ref) = groups[idx].proxies.first()
+                    && let Some(upstream_idx) = groups.iter().position(|g| {
+                        g.group_type.eq_ignore_ascii_case("select") && &g.name == first_ref
+                    })
+                {
+                    return Some(upstream_idx);
+                }
                 return Some(idx);
             }
         }
     }
     groups
         .iter()
-        .position(|g| {
-            g.group_type.eq_ignore_ascii_case("select")
-                && matches!(
-                    g.name.as_str(),
-                    "代理选择" | "节点选择" | "Proxy" | "PROXY" | "🚀 节点选择"
-                )
-        })
-        .or_else(|| {
-            groups
-                .iter()
-                .position(|g| g.group_type.eq_ignore_ascii_case("select"))
-        })
+        .position(|g| g.group_type.eq_ignore_ascii_case("select"))
 }
 
 pub fn primary_select_group_index_from_yaml(
@@ -1142,13 +1183,39 @@ pub fn recompute_proxy_groups(nodes: &[NodeSummary], groups: &mut [ProxyGroupSum
                     .proxies
                     .iter()
                     .filter_map(|name| {
+                        if is_info_pseudo_node(name) {
+                            return None;
+                        }
                         let n = node_map.get(name.as_str())?;
                         n.latency_ms.map(|ms| (ms, name.clone()))
                     })
                     .min_by_key(|(ms, _)| *ms)
-                    .map(|(_, name)| name);
+                    .map(|(_, name)| name)
+                    .or_else(|| {
+                        group
+                            .proxies
+                            .iter()
+                            .filter_map(|name| {
+                                let n = node_map.get(name.as_str())?;
+                                n.latency_ms.map(|ms| (ms, name.clone()))
+                            })
+                            .min_by_key(|(ms, _)| *ms)
+                            .map(|(_, name)| name)
+                    });
                 let chosen = fastest
-                    .or_else(|| group.selected.clone().filter(|s| group.proxies.contains(s)))
+                    .or_else(|| {
+                        group
+                            .selected
+                            .clone()
+                            .filter(|s| group.proxies.contains(s) && !is_info_pseudo_node(s))
+                    })
+                    .or_else(|| {
+                        group
+                            .proxies
+                            .iter()
+                            .find(|s| !is_info_pseudo_node(s))
+                            .cloned()
+                    })
                     .or_else(|| group.proxies.first().cloned());
                 group.now = chosen.clone();
                 group.selected = chosen;
@@ -1164,15 +1231,31 @@ pub fn recompute_proxy_groups(nodes: &[NodeSummary], groups: &mut [ProxyGroupSum
                         .proxies
                         .iter()
                         .find(|name| {
-                            node_map
-                                .get(name.as_str())
-                                .is_some_and(|n| n.latency_ms.is_some() && n.last_error.is_none())
+                            !is_info_pseudo_node(name)
+                                && node_map.get(name.as_str()).is_some_and(|n| {
+                                    n.latency_ms.is_some() && n.last_error.is_none()
+                                })
+                        })
+                        .or_else(|| {
+                            group.proxies.iter().find(|name| {
+                                node_map.get(name.as_str()).is_some_and(|n| {
+                                    n.latency_ms.is_some() && n.last_error.is_none()
+                                })
+                            })
                         })
                         .cloned()
                 } else {
                     None
                 };
-                let chosen = healthy.or_else(|| group.proxies.first().cloned());
+                let chosen = healthy
+                    .or_else(|| {
+                        group
+                            .proxies
+                            .iter()
+                            .find(|s| !is_info_pseudo_node(s))
+                            .cloned()
+                    })
+                    .or_else(|| group.proxies.first().cloned());
                 group.now = chosen.clone();
                 group.selected = chosen;
             }
@@ -1180,7 +1263,14 @@ pub fn recompute_proxy_groups(nodes: &[NodeSummary], groups: &mut [ProxyGroupSum
                 let valid = group
                     .selected
                     .clone()
-                    .filter(|s| group.proxies.contains(s))
+                    .filter(|s| group.proxies.contains(s) && !is_info_pseudo_node(s))
+                    .or_else(|| {
+                        group
+                            .proxies
+                            .iter()
+                            .find(|s| !is_info_pseudo_node(s))
+                            .cloned()
+                    })
                     .or_else(|| group.proxies.first().cloned());
                 group.selected = valid.clone();
                 group.now = valid;
@@ -1314,5 +1404,72 @@ rules:
             resolve_group_leaf_target("代理选择", &payload.proxy_groups).as_deref(),
             Some("HK-AnyTLS")
         );
+    }
+
+    #[tokio::test]
+    async fn resolves_primary_group_across_final_fallback_and_skips_info_nodes() -> Result<()> {
+        let yaml = r#"
+proxies:
+  - name: '剩余流量：2048 GB'
+    type: anytls
+    server: v6.example.com
+    port: 443
+    password: p1
+  - name: '套餐到期：2029-06-25'
+    type: anytls
+    server: v6.example.com
+    port: 443
+    password: p1
+  - name: '🇭🇰HK HKT AnyTLS'
+    type: anytls
+    server: hk.example.com
+    port: 443
+    password: p1
+proxy-groups:
+  - name: PassGFW
+    type: select
+    proxies: [自动选择, 故障转移, '剩余流量：2048 GB', '套餐到期：2029-06-25', '🇭🇰HK HKT AnyTLS']
+  - name: 自动选择
+    type: url-test
+    proxies: ['剩余流量：2048 GB', '套餐到期：2029-06-25', '🇭🇰HK HKT AnyTLS']
+  - name: 故障转移
+    type: fallback
+    proxies: ['剩余流量：2048 GB', '套餐到期：2029-06-25', '🇭🇰HK HKT AnyTLS']
+  - name: 漏网之鱼
+    type: select
+    proxies: [PassGFW, 自动选择, DIRECT]
+rules:
+  - GEOIP,CN,DIRECT,no-resolve
+  - MATCH,漏网之鱼
+"#;
+        let mut parsed = parse_yaml_profile(yaml).await?;
+        assert_eq!(first_preferred_node_index(&parsed.nodes), 2);
+        assert_eq!(
+            primary_select_group_index_from_yaml(
+                &parsed.proxy_groups,
+                parsed.route_config_yaml.as_deref()
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            parsed.proxy_groups[1].now.as_deref(),
+            Some("🇭🇰HK HKT AnyTLS")
+        );
+        assert_eq!(
+            parsed.proxy_groups[2].now.as_deref(),
+            Some("🇭🇰HK HKT AnyTLS")
+        );
+        parsed.nodes[0].latency_ms = Some(80);
+        parsed.nodes[2].latency_ms = Some(120);
+        recompute_proxy_groups(&parsed.nodes, &mut parsed.proxy_groups);
+        assert_eq!(
+            parsed.proxy_groups[1].now.as_deref(),
+            Some("🇭🇰HK HKT AnyTLS")
+        );
+        assert_eq!(
+            parsed.proxy_groups[2].now.as_deref(),
+            Some("🇭🇰HK HKT AnyTLS")
+        );
+        Ok(())
     }
 }

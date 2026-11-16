@@ -227,6 +227,8 @@ pub struct EngineSnapshot {
     pub nodes_testing: bool,
     pub nodes: Vec<crate::profile::NodeSummary>,
     pub proxy_groups: Vec<crate::profile::ProxyGroupSummary>,
+    #[serde(default)]
+    pub primary_group_name: Option<String>,
     pub rule_count: usize,
     pub rules_preview: Vec<String>,
     pub telemetry: TelemetrySnapshot,

@@ -8,6 +8,15 @@ public static class NetoNativeBridge
 {
     private const string DllName = "neto_ffi";
     private static string _overrideLibraryName = DllName;
+    private static readonly object ShutdownSync = new();
+    private static int _exitHooksRegistered;
+    private static bool _initialized;
+    private static readonly ConsoleCtrlDelegate ConsoleCtrlHandler = OnConsoleCtrl;
+
+    private delegate bool ConsoleCtrlDelegate(uint ctrlType);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool SetConsoleCtrlHandler(ConsoleCtrlDelegate handlerRoutine, bool add);
 
     static NetoNativeBridge()
     {
@@ -43,12 +52,14 @@ public static class NetoNativeBridge
 
     public static JsonNode Init(string dataDir, string appId, string userAgent)
     {
+        EnsureExitHooksRegistered();
         var dirPtr = Marshal.StringToCoTaskMemUTF8(dataDir);
         var appPtr = Marshal.StringToCoTaskMemUTF8(appId);
         var uaPtr = Marshal.StringToCoTaskMemUTF8(userAgent);
         try
         {
             var resPtr = neto_init(dirPtr, appPtr, uaPtr);
+            _initialized = true;
             return ConsumeEnvelope(resPtr);
         }
         finally
@@ -87,11 +98,39 @@ public static class NetoNativeBridge
 
     public static void Shutdown()
     {
-        var ptr = neto_shutdown();
-        if (ptr != IntPtr.Zero)
+        if (!_initialized) return;
+        lock (ShutdownSync)
         {
-            neto_free_string(ptr);
+            try
+            {
+                var ptr = neto_shutdown();
+                if (ptr != IntPtr.Zero)
+                {
+                    neto_free_string(ptr);
+                }
+            }
+            catch
+            {
+            }
         }
+    }
+
+    private static void EnsureExitHooksRegistered()
+    {
+        if (Interlocked.Exchange(ref _exitHooksRegistered, 1) != 0) return;
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => Shutdown();
+        AppDomain.CurrentDomain.UnhandledException += (_, _) => Shutdown();
+        try { SetConsoleCtrlHandler(ConsoleCtrlHandler, true); } catch { }
+    }
+
+    private static bool OnConsoleCtrl(uint ctrlType)
+    {
+        // CTRL_CLOSE_EVENT = 2, CTRL_LOGOFF_EVENT = 5, CTRL_SHUTDOWN_EVENT = 6
+        if (ctrlType is 2 or 5 or 6)
+        {
+            Shutdown();
+        }
+        return false;
     }
 
     private static JsonNode ConsumeEnvelope(IntPtr ptr)

@@ -20,15 +20,21 @@ public sealed class NodesPageView
     private readonly StackPanel _groupsPanel;
     private readonly Grid _nodesGrid;
     private readonly HashSet<int> _testingIndices = [];
-    private readonly HashSet<string> _testingGroups = [];
     private List<string> _protoOptions = [""];
     private FrameworkElement? _selectedCardElement;
+    private string _selectedGroupName = "";
     private bool _syncingProto;
     private bool _syncingSort;
     private string _filter = "";
     private string _protoFilter = "";
     private string _lastSig = "";
     private string _lastProtoListSig = "";
+
+    private sealed record GroupMemberEntry(
+        string Name,
+        NetoProxyGroup? SubGroup,
+        NetoNodeItem? Node,
+        string? BuiltinLabel);
 
     private static readonly (string Key, string Label)[] SortOptions =
     [
@@ -93,7 +99,7 @@ public sealed class NodesPageView
             Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
         };
         _locateBtn = new Button { Content = "定位" };
-        _testAllBtn = new Button { Content = "批量测速" };
+        _testAllBtn = new Button { Content = "测速" };
 
         _locateBtn.Click += (_, _) =>
         {
@@ -110,7 +116,19 @@ public sealed class NodesPageView
             }
             _selectedCardElement?.StartBringIntoView();
         };
-        _testAllBtn.Click += async (_, _) => await _client.TestAllNodesAsync();
+        _testAllBtn.Click += async (_, _) =>
+        {
+            var snap = _client.Snapshot;
+            var activeGroup = ResolveActiveGroup(snap);
+            if (activeGroup != null)
+            {
+                await _client.TestGroupNodesAsync(activeGroup.Name);
+            }
+            else
+            {
+                await _client.TestAllNodesAsync();
+            }
+        };
 
         Grid.SetColumn(_protoCombo, 1);
         Grid.SetColumn(_sortCombo, 2);
@@ -145,6 +163,11 @@ public sealed class NodesPageView
 
     public void ApplySnapshot(NetoSnapshot snap)
     {
+        var hasRealNodes = snap.Nodes.Any(n => n.Supported && !NetoFormat.IsInfoPseudoNode(n.Name));
+        var isDirectMode = string.Equals(snap.Settings.RoutingMode, "direct", StringComparison.OrdinalIgnoreCase);
+        var activeGroup = ResolveActiveGroup(snap);
+        var isGroupMode = activeGroup != null;
+
         var sortIdx = Array.FindIndex(SortOptions, s => s.Key == snap.NodeSortMode);
         var targetSortIdx = sortIdx >= 0 ? sortIdx : 0;
         if (_sortCombo.SelectedIndex != targetSortIdx)
@@ -153,11 +176,13 @@ public sealed class NodesPageView
             _sortCombo.SelectedIndex = targetSortIdx;
             _syncingSort = false;
         }
-        _testAllBtn.Content = snap.NodesTesting ? "测速中..." : "批量测速";
+        _protoCombo.Visibility = isGroupMode ? Visibility.Collapsed : Visibility.Visible;
+        _testAllBtn.Content = snap.NodesTesting ? "测速中..." : "测速";
         _testAllBtn.IsEnabled = !snap.NodesTesting && snap.Nodes.Count > 0;
         _locateBtn.IsEnabled = snap.Nodes.Count > 0;
 
         var distinctProtos = snap.Nodes
+            .Where(n => !hasRealNodes || !NetoFormat.IsInfoPseudoNode(n.Name))
             .Select(n => n.ProtocolLabel)
             .Where(s => !string.IsNullOrWhiteSpace(s))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -188,141 +213,169 @@ public sealed class NodesPageView
 
         var visible = snap.Nodes.Where(n =>
         {
+            if (hasRealNodes && NetoFormat.IsInfoPseudoNode(n.Name))
+                return false;
             if (!string.IsNullOrEmpty(_protoFilter) && !string.Equals(n.ProtocolLabel, _protoFilter, StringComparison.OrdinalIgnoreCase))
                 return false;
             if (!string.IsNullOrEmpty(_filter))
             {
                 return n.Name.ToLowerInvariant().Contains(_filter) ||
+                       NetoFormat.FormatDisplayName(n.Name).ToLowerInvariant().Contains(_filter) ||
                        n.ProtocolLabel.ToLowerInvariant().Contains(_filter) ||
                        n.Tags.Any(t => t.ToLowerInvariant().Contains(_filter));
             }
             return true;
         }).ToList();
 
-        _countLabel.Text = string.IsNullOrEmpty(_filter) && string.IsNullOrEmpty(_protoFilter)
-            ? $"{snap.Nodes.Count} 节点"
-            : $"{visible.Count} / {snap.Nodes.Count}";
+        var totalRealCount = snap.Nodes.Count(n => !hasRealNodes || !NetoFormat.IsInfoPseudoNode(n.Name));
+        var groupEntries = isGroupMode
+            ? BuildGroupEntries(snap, activeGroup!, hasRealNodes)
+            : [];
+        if (isGroupMode)
+        {
+            _countLabel.Text = string.IsNullOrEmpty(_filter)
+                ? $"{groupEntries.Count} 项"
+                : $"{groupEntries.Count} / {activeGroup!.Proxies.Count(p => !hasRealNodes || !NetoFormat.IsInfoPseudoNode(p))}";
+        }
+        else
+        {
+            _countLabel.Text = string.IsNullOrEmpty(_filter) && string.IsNullOrEmpty(_protoFilter)
+                ? $"{totalRealCount} 节点"
+                : $"{visible.Count} / {totalRealCount}";
+        }
 
         var sig = string.Join("|",
+            snap.ActiveProfile?.Id ?? "",
+            snap.Settings.RoutingMode,
+            activeGroup?.Name ?? "",
             snap.NodeSortMode,
             snap.SelectedNodeIndex,
             _filter,
             _protoFilter,
             string.Join(",", _testingIndices.OrderBy(x => x)),
-            string.Join(",", _testingGroups.OrderBy(x => x)),
             string.Join(",", snap.ProxyGroups.Select(g => $"{g.Name}:{g.GroupType}:{g.Selected}:{g.Now}")),
-            string.Join(",", snap.Nodes.Select(n => $"{n.Index}:{n.LatencyMs}:{n.LastError != null}"))
+            string.Join(",", snap.Nodes.Select(n => $"{n.Index}:{n.Name}:{n.LatencyMs}:{n.LastError != null}"))
         );
         if (_lastSig == sig) return;
         _lastSig = sig;
 
         _groupsPanel.Children.Clear();
         _selectedCardElement = null;
-        var nonEmptyGroups = snap.ProxyGroups.Where(g => g.Proxies.Count > 0).ToList();
-        if (nonEmptyGroups.Count > 0)
+
+        if (isDirectMode)
         {
-            var gCardStack = new StackPanel { Spacing = 8 };
-            gCardStack.Children.Add(NetoUiFactory.CreateInlineCardHeader("策略组"));
-            var gGrid = new Grid { ColumnSpacing = 10, RowSpacing = 8 };
-            gGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            gGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            var gRows = (nonEmptyGroups.Count + 1) / 2;
-            for (var r = 0; r < gRows; r++) gGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            for (var i = 0; i < nonEmptyGroups.Count; i++)
+            var bannerGrid = new Grid { ColumnSpacing = 10 };
+            bannerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            bannerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            bannerGrid.Children.Add(new TextBlock
             {
-                var grp = nonEmptyGroups[i];
-                var groupName = grp.Name;
-                var isGrpTesting = _testingGroups.Contains(groupName);
-                var itemBox = new StackPanel { Spacing = 4 };
+                Text = "当前为直连模式，节点暂不接管流量",
+                FontSize = 12,
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+            });
+            var switchRuleBtn = new Button
+            {
+                Content = "切到规则",
+                Padding = new Thickness(10, 4, 10, 4),
+                FontSize = 12,
+            };
+            switchRuleBtn.Click += async (_, _) => await _client.SetRoutingModeAsync("rule");
+            Grid.SetColumn(switchRuleBtn, 1);
+            bannerGrid.Children.Add(switchRuleBtn);
+            _groupsPanel.Children.Add(NetoUiFactory.CreateCard(bannerGrid, new Thickness(12, 8, 12, 8)));
+        }
 
-                var grpHeader = new Grid { ColumnSpacing = 6 };
-                grpHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                grpHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                grpHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-                var grpTitleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-                grpTitleRow.Children.Add(new TextBlock
+        if (isGroupMode)
+        {
+            var nonEmptyGroups = snap.ProxyGroups.Where(g => g.Proxies.Count > 0).ToList();
+            var tabsRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            foreach (var grp in nonEmptyGroups)
+            {
+                var isTabActive = grp.Name == activeGroup!.Name;
+                var targetName = NetoFormat.FormatDisplayName(grp.Now ?? grp.Selected ?? "-");
+                var tabContent = new StackPanel { Spacing = 2, MaxWidth = 200 };
+                var titleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+                titleRow.Children.Add(new TextBlock
                 {
                     Text = grp.Name,
                     FontSize = 12,
-                    FontWeight = FontWeights.SemiBold,
+                    FontWeight = isTabActive ? FontWeights.SemiBold : FontWeights.Normal,
                     VerticalAlignment = VerticalAlignment.Center,
                 });
-                grpTitleRow.Children.Add(NetoUiFactory.CreateTagBadge(grp.GroupTypeLabel));
-
-                var grpTestBtn = new Button
+                titleRow.Children.Add(NetoUiFactory.CreateTagBadge(grp.ShortTypeLabel));
+                tabContent.Children.Add(titleRow);
+                tabContent.Children.Add(new TextBlock
                 {
-                    Content = isGrpTesting ? "测速中..." : "测速",
+                    Text = targetName,
                     FontSize = 11,
-                    Padding = new Thickness(8, 2, 8, 2),
-                    IsEnabled = !isGrpTesting && !snap.NodesTesting,
-                };
-                grpTestBtn.Click += async (_, _) =>
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+                });
+
+                var tabBtn = new Button
                 {
-                    _testingGroups.Add(groupName);
+                    Content = tabContent,
+                    HorizontalContentAlignment = HorizontalAlignment.Left,
+                    Padding = new Thickness(10, 6, 10, 6),
+                    CornerRadius = new CornerRadius(8),
+                };
+                if (isTabActive)
+                {
+                    tabBtn.BorderBrush = NetoUiFactory.BrushResource("AccentFillColorDefaultBrush", Color.FromArgb(255, 0, 120, 212));
+                    tabBtn.BorderThickness = new Thickness(1.5);
+                }
+                var targetGroupName = grp.Name;
+                tabBtn.Click += (_, _) =>
+                {
+                    _selectedGroupName = targetGroupName;
                     _lastSig = "";
                     ApplySnapshot(_client.Snapshot);
-                    try { await _client.TestGroupNodesAsync(groupName); }
-                    finally
-                    {
-                        _testingGroups.Remove(groupName);
-                        _lastSig = "";
-                        ApplySnapshot(_client.Snapshot);
-                    }
                 };
-                Grid.SetColumn(grpTestBtn, 2);
-                grpHeader.Children.Add(grpTitleRow);
-                grpHeader.Children.Add(grpTestBtn);
-                itemBox.Children.Add(grpHeader);
-
-                if (grp.IsManualSelect)
-                {
-                    var combo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
-                    foreach (var p in grp.Proxies) combo.Items.Add(p);
-                    var target = grp.Now ?? grp.Selected ?? grp.Proxies[0];
-                    var currentSelected = target;
-                    combo.SelectedItem = combo.Items.Contains(target) ? target : combo.Items[0];
-                    combo.SelectionChanged += async (_, _) =>
-                    {
-                        if (combo.SelectedItem is string s && s != currentSelected)
-                        {
-                            currentSelected = s;
-                            await _client.SelectGroupProxyAsync(groupName, s);
-                        }
-                    };
-                    itemBox.Children.Add(combo);
-                }
-                else
-                {
-                    var resolvedNow = grp.Now ?? grp.Selected ?? grp.Proxies[0];
-                    var autoCard = NetoUiFactory.CreateCard(new TextBlock
-                    {
-                        Text = $"当前命中：{resolvedNow}（共 {grp.Proxies.Count} 项）",
-                        FontSize = 12,
-                        TextTrimming = TextTrimming.CharacterEllipsis,
-                        Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
-                    }, new Thickness(10, 7, 10, 7));
-                    itemBox.Children.Add(autoCard);
-                }
-
-                Grid.SetRow(itemBox, i / 2);
-                Grid.SetColumn(itemBox, i % 2);
-                if (i == nonEmptyGroups.Count - 1 && nonEmptyGroups.Count % 2 == 1) Grid.SetColumnSpan(itemBox, 2);
-                gGrid.Children.Add(itemBox);
+                tabsRow.Children.Add(tabBtn);
             }
-            gCardStack.Children.Add(gGrid);
-            _groupsPanel.Children.Add(NetoUiFactory.CreateCard(gCardStack));
+            var tabsScroll = new ScrollViewer
+            {
+                HorizontalScrollMode = ScrollMode.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+                VerticalScrollMode = ScrollMode.Disabled,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Padding = new Thickness(0, 0, 0, 4),
+                Content = tabsRow,
+            };
+            _groupsPanel.Children.Add(tabsScroll);
+
+            var currentHit = NetoFormat.FormatDisplayName(activeGroup!.Now ?? activeGroup.Selected ?? "-");
+            var leafHit = snap.ResolveGroupLeafTarget(activeGroup.Name);
+            var formattedLeaf = string.IsNullOrEmpty(leafHit) ? "" : NetoFormat.FormatDisplayName(leafHit);
+            var summaryText = !string.IsNullOrEmpty(formattedLeaf) && formattedLeaf != currentHit
+                ? $"{activeGroup.GroupTypeLabel} · {currentHit} → {formattedLeaf}"
+                : $"{activeGroup.GroupTypeLabel} · {currentHit}";
+            _groupsPanel.Children.Add(new TextBlock
+            {
+                Text = summaryText,
+                FontSize = 12,
+                Margin = new Thickness(2, 0, 2, 0),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+            });
         }
 
         _nodesGrid.Children.Clear();
         _nodesGrid.RowDefinitions.Clear();
+
+        if (isGroupMode)
+        {
+            RenderGroupMembersGrid(snap, activeGroup!, groupEntries);
+            return;
+        }
 
         if (visible.Count == 0)
         {
             _nodesGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             var emptyCard = NetoUiFactory.CreateCard(new TextBlock
             {
-                Text = snap.Nodes.Count == 0 ? "暂无可用节点" : "没有匹配的节点",
+                Text = totalRealCount == 0 ? "暂无可用节点" : "没有匹配的节点",
                 Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
             });
             Grid.SetColumnSpan(emptyCard, 2);
@@ -336,95 +389,311 @@ public sealed class NodesPageView
             _nodesGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         }
 
+        var effectiveIdx = snap.EffectiveActiveNode?.Index ?? snap.SelectedNodeIndex;
         for (var i = 0; i < visible.Count; i++)
         {
             var node = visible[i];
-            var isSelected = node.Index == snap.SelectedNodeIndex;
-            var isTesting = _testingIndices.Contains(node.Index);
-            var rowGrid = new Grid { ColumnSpacing = 6 };
-            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(AutoSizeOrZero(true), GridUnitType.Auto) });
-            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var isSelected = node.Index == effectiveIdx;
+            var card = BuildNodeCard(
+                node,
+                isSelected,
+                canSelect: node.Supported,
+                onSelect: () => _client.SelectNodeAsync(node.Index));
+            Grid.SetRow(card, i / 2);
+            Grid.SetColumn(card, i % 2);
+            _nodesGrid.Children.Add(card);
+        }
+    }
 
-            var infoStack = new StackPanel { Spacing = 4 };
-            infoStack.Children.Add(new TextBlock
+    private NetoProxyGroup? ResolveActiveGroup(NetoSnapshot snap)
+    {
+        if (!string.Equals(snap.Settings.RoutingMode, "rule", StringComparison.OrdinalIgnoreCase))
+            return null;
+        var nonEmpty = snap.ProxyGroups.Where(g => g.Proxies.Count > 0).ToList();
+        if (nonEmpty.Count == 0) return null;
+        if (!string.IsNullOrEmpty(_selectedGroupName))
+        {
+            var matched = nonEmpty.FirstOrDefault(g => g.Name == _selectedGroupName);
+            if (matched != null) return matched;
+        }
+        return snap.PrimarySelectGroup is { Proxies.Count: > 0 } primary
+            ? primary
+            : nonEmpty[0];
+    }
+
+    private List<GroupMemberEntry> BuildGroupEntries(NetoSnapshot snap, NetoProxyGroup activeGroup, bool hasRealNodes)
+    {
+        var nodesByName = snap.Nodes
+            .GroupBy(n => n.Name, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+        var groupsByName = snap.ProxyGroups
+            .GroupBy(g => g.Name, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
+        var raw = new List<GroupMemberEntry>();
+        foreach (var memberName in activeGroup.Proxies)
+        {
+            groupsByName.TryGetValue(memberName, out var subGrp);
+            var node = subGrp == null && nodesByName.TryGetValue(memberName, out var foundNode) ? foundNode : null;
+            var builtin = memberName.Equals("DIRECT", StringComparison.OrdinalIgnoreCase)
+                ? "直连出站"
+                : (memberName.Equals("REJECT", StringComparison.OrdinalIgnoreCase) ||
+                   memberName.Equals("REJECT-DROP", StringComparison.OrdinalIgnoreCase))
+                    ? "拦截连接"
+                    : null;
+            if (hasRealNodes && subGrp == null && builtin == null && NetoFormat.IsInfoPseudoNode(memberName))
+                continue;
+            if (!string.IsNullOrEmpty(_filter))
             {
-                Text = isSelected ? $"● {node.Name}" : node.Name,
-                FontWeight = isSelected ? FontWeights.SemiBold : FontWeights.Normal,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-            });
-            var badgesRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
-            badgesRow.Children.Add(NetoUiFactory.CreateTagBadge(node.ProtocolLabel));
-            if (node.Udp) badgesRow.Children.Add(NetoUiFactory.CreateTagBadge("UDP"));
-            foreach (var tag in node.Tags.Take(2))
-            {
-                badgesRow.Children.Add(NetoUiFactory.CreateTagBadge(tag));
+                var disp = NetoFormat.FormatDisplayName(memberName).ToLowerInvariant();
+                var match = memberName.ToLowerInvariant().Contains(_filter) ||
+                            disp.Contains(_filter) ||
+                            (node != null && (node.ProtocolLabel.ToLowerInvariant().Contains(_filter) ||
+                                              node.Tags.Any(t => t.ToLowerInvariant().Contains(_filter)))) ||
+                            (subGrp != null && subGrp.GroupTypeLabel.ToLowerInvariant().Contains(_filter));
+                if (!match) continue;
             }
-            infoStack.Children.Add(badgesRow);
+            raw.Add(new GroupMemberEntry(memberName, subGrp, node, builtin));
+        }
 
-            var selectBtn = new Button
-            {
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                VerticalAlignment = VerticalAlignment.Stretch,
-                HorizontalContentAlignment = HorizontalAlignment.Left,
-                Background = new SolidColorBrush(Colors.Transparent),
-                BorderThickness = new Thickness(0),
-                Padding = new Thickness(6, 4, 6, 4),
-                Content = infoStack,
-                IsEnabled = node.Supported,
-            };
-            var idx = node.Index;
-            selectBtn.Click += async (_, _) => await _client.SelectNodeAsync(idx);
+        var pinned = raw.Where(e => e.Node == null).ToList();
+        var nodeEntries = raw.Where(e => e.Node != null).ToList();
+        var sortedNodes = snap.NodeSortMode switch
+        {
+            "latency" => nodeEntries
+                .OrderBy(e => NetoFormat.IsInfoPseudoNode(e.Name))
+                .ThenBy(e => e.Node!.LatencyMs ?? ulong.MaxValue)
+                .ThenBy(e => e.Node!.Index)
+                .ToList(),
+            "name" => nodeEntries
+                .OrderBy(e => NetoFormat.IsInfoPseudoNode(e.Name))
+                .ThenBy(e => NetoFormat.FormatDisplayName(e.Name), StringComparer.OrdinalIgnoreCase)
+                .ToList(),
+            _ => nodeEntries,
+        };
+        pinned.AddRange(sortedNodes);
+        return pinned;
+    }
 
-            var latColor = NetoUiFactory.LatencyColor(node.LatencyMs, node.LastError != null);
-            var latText = new TextBlock
+    private void RenderGroupMembersGrid(NetoSnapshot snap, NetoProxyGroup activeGroup, List<GroupMemberEntry> entries)
+    {
+        if (entries.Count == 0)
+        {
+            _nodesGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var emptyCard = NetoUiFactory.CreateCard(new TextBlock
             {
-                Text = isTesting ? "..." : (node.LatencyMs.HasValue ? $"{node.LatencyMs.Value} ms" : (node.LastError != null ? "超时" : "-")),
-                FontSize = 12,
-                FontFamily = new FontFamily("Consolas"),
-                MinWidth = 48,
-                TextAlignment = TextAlignment.Right,
-                VerticalAlignment = VerticalAlignment.Center,
-                Foreground = new SolidColorBrush(latColor),
-            };
-            var testBtn = new Button
+                Text = "当前策略组下没有匹配项",
+                Foreground = NetoUiFactory.BrushResource("TextFillColorSecondaryBrush", Colors.Gray),
+            });
+            Grid.SetColumnSpan(emptyCard, 2);
+            _nodesGrid.Children.Add(emptyCard);
+            return;
+        }
+
+        var totalRows = (entries.Count + 1) / 2;
+        for (var r = 0; r < totalRows; r++)
+        {
+            _nodesGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        }
+
+        var currentTarget = activeGroup.Now ?? activeGroup.Selected ?? activeGroup.Proxies.FirstOrDefault() ?? "";
+        var groupName = activeGroup.Name;
+        var canManualPick = activeGroup.IsManualSelect;
+
+        for (var i = 0; i < entries.Count; i++)
+        {
+            var entry = entries[i];
+            var isSelected = entry.Name == currentTarget;
+            Border card;
+            if (entry.Node != null)
             {
-                Content = new FontIcon { Glyph = "\uE72C", FontSize = 12 },
-                Padding = new Thickness(8, 6, 8, 6),
-                VerticalAlignment = VerticalAlignment.Center,
-                IsEnabled = !isTesting && node.Supported,
-            };
-            ToolTipService.SetToolTip(testBtn, "测试延迟");
-            testBtn.Click += async (_, _) =>
+                var memberName = entry.Name;
+                var nodeIdx = entry.Node.Index;
+                card = BuildNodeCard(
+                    entry.Node,
+                    isSelected,
+                    canSelect: entry.Node.Supported && canManualPick,
+                    onSelect: () => canManualPick
+                        ? _client.SelectGroupProxyAsync(groupName, memberName)
+                        : _client.SelectNodeAsync(nodeIdx));
+            }
+            else
             {
-                _testingIndices.Add(idx);
-                _lastSig = "";
-                ApplySnapshot(_client.Snapshot);
-                try { await _client.TestNodeAsync(idx); }
-                finally
+                var memberName = entry.Name;
+                var subGrp = entry.SubGroup;
+                var rowGrid = new Grid { ColumnSpacing = 6 };
+                rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                var infoStack = new StackPanel { Spacing = 4 };
+                var dispTitle = NetoFormat.FormatDisplayName(memberName);
+                infoStack.Children.Add(new TextBlock
                 {
-                    _testingIndices.Remove(idx);
-                    _lastSig = "";
-                    ApplySnapshot(_client.Snapshot);
+                    Text = isSelected ? $"● {dispTitle}" : dispTitle,
+                    FontWeight = isSelected ? FontWeights.SemiBold : FontWeights.Normal,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                });
+                var badgesRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+                if (subGrp != null)
+                {
+                    badgesRow.Children.Add(NetoUiFactory.CreateTagBadge(subGrp.GroupTypeLabel));
+                    var leaf = snap.ResolveGroupLeafTarget(subGrp.Name);
+                    if (!string.IsNullOrEmpty(leaf))
+                    {
+                        badgesRow.Children.Add(NetoUiFactory.CreateTagBadge(NetoFormat.FormatDisplayName(leaf)));
+                    }
                 }
-            };
+                else if (!string.IsNullOrEmpty(entry.BuiltinLabel))
+                {
+                    badgesRow.Children.Add(NetoUiFactory.CreateTagBadge(entry.BuiltinLabel));
+                }
+                infoStack.Children.Add(badgesRow);
 
-            Grid.SetColumn(latText, 1);
-            Grid.SetColumn(testBtn, 2);
-            rowGrid.Children.Add(selectBtn);
-            rowGrid.Children.Add(latText);
-            rowGrid.Children.Add(testBtn);
-            var card = NetoUiFactory.CreateCard(rowGrid, new Thickness(8, 6, 10, 6));
-            if (isSelected)
-            {
-                card.BorderBrush = NetoUiFactory.BrushResource("AccentFillColorDefaultBrush", Color.FromArgb(255, 0, 120, 212));
-                card.BorderThickness = new Thickness(1.5);
-                _selectedCardElement = card;
+                var selectBtn = new Button
+                {
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    VerticalAlignment = VerticalAlignment.Stretch,
+                    HorizontalContentAlignment = HorizontalAlignment.Left,
+                    Background = new SolidColorBrush(Colors.Transparent),
+                    BorderThickness = new Thickness(0),
+                    Padding = new Thickness(6, 4, 6, 4),
+                    Content = infoStack,
+                    IsEnabled = canManualPick || subGrp != null,
+                };
+                selectBtn.Click += async (_, _) =>
+                {
+                    if (canManualPick)
+                    {
+                        await _client.SelectGroupProxyAsync(groupName, memberName);
+                    }
+                    else if (subGrp != null)
+                    {
+                        _selectedGroupName = subGrp.Name;
+                        _lastSig = "";
+                        ApplySnapshot(_client.Snapshot);
+                    }
+                };
+                rowGrid.Children.Add(selectBtn);
+
+                if (subGrp != null)
+                {
+                    var jumpBtn = new Button
+                    {
+                        Content = new FontIcon { Glyph = "\uE76C", FontSize = 12 },
+                        Padding = new Thickness(8, 6, 8, 6),
+                        VerticalAlignment = VerticalAlignment.Center,
+                    };
+                    ToolTipService.SetToolTip(jumpBtn, "查看子策略组");
+                    var subName = subGrp.Name;
+                    jumpBtn.Click += (_, _) =>
+                    {
+                        _selectedGroupName = subName;
+                        _lastSig = "";
+                        ApplySnapshot(_client.Snapshot);
+                    };
+                    Grid.SetColumn(jumpBtn, 1);
+                    rowGrid.Children.Add(jumpBtn);
+                }
+
+                card = NetoUiFactory.CreateCard(rowGrid, new Thickness(8, 6, 10, 6));
+                if (isSelected)
+                {
+                    card.BorderBrush = NetoUiFactory.BrushResource("AccentFillColorDefaultBrush", Color.FromArgb(255, 0, 120, 212));
+                    card.BorderThickness = new Thickness(1.5);
+                    _selectedCardElement = card;
+                }
             }
             Grid.SetRow(card, i / 2);
             Grid.SetColumn(card, i % 2);
             _nodesGrid.Children.Add(card);
         }
+    }
+
+    private Border BuildNodeCard(NetoNodeItem node, bool isSelected, bool canSelect, Func<Task> onSelect)
+    {
+        var isTesting = _testingIndices.Contains(node.Index);
+        var rowGrid = new Grid { ColumnSpacing = 6 };
+        rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(AutoSizeOrZero(true), GridUnitType.Auto) });
+        rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var dispName = NetoFormat.FormatDisplayName(node.Name);
+        var infoStack = new StackPanel { Spacing = 4 };
+        infoStack.Children.Add(new TextBlock
+        {
+            Text = isSelected ? $"● {dispName}" : dispName,
+            FontWeight = isSelected ? FontWeights.SemiBold : FontWeights.Normal,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        });
+        var badgesRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        badgesRow.Children.Add(NetoUiFactory.CreateTagBadge(node.ProtocolLabel));
+        if (node.Udp) badgesRow.Children.Add(NetoUiFactory.CreateTagBadge("UDP"));
+        foreach (var tag in node.Tags.Take(2))
+        {
+            badgesRow.Children.Add(NetoUiFactory.CreateTagBadge(tag));
+        }
+        infoStack.Children.Add(badgesRow);
+
+        var selectBtn = new Button
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            Background = new SolidColorBrush(Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(6, 4, 6, 4),
+            Content = infoStack,
+            IsEnabled = canSelect,
+        };
+        selectBtn.Click += async (_, _) => await onSelect();
+
+        var latColor = NetoUiFactory.LatencyColor(node.LatencyMs, node.LastError != null);
+        var latText = new TextBlock
+        {
+            Text = isTesting ? "..." : (node.LatencyMs.HasValue ? $"{node.LatencyMs.Value} ms" : (node.LastError != null ? "超时" : "-")),
+            FontSize = 12,
+            FontFamily = new FontFamily("Consolas"),
+            MinWidth = 48,
+            TextAlignment = TextAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = new SolidColorBrush(latColor),
+        };
+        var idx = node.Index;
+        var testBtn = new Button
+        {
+            Content = new FontIcon { Glyph = "\uE72C", FontSize = 12 },
+            Padding = new Thickness(8, 6, 8, 6),
+            VerticalAlignment = VerticalAlignment.Center,
+            IsEnabled = !isTesting && node.Supported,
+        };
+        ToolTipService.SetToolTip(testBtn, "测试延迟");
+        testBtn.Click += async (_, _) =>
+        {
+            _testingIndices.Add(idx);
+            _lastSig = "";
+            ApplySnapshot(_client.Snapshot);
+            try { await _client.TestNodeAsync(idx); }
+            finally
+            {
+                _testingIndices.Remove(idx);
+                _lastSig = "";
+                ApplySnapshot(_client.Snapshot);
+            }
+        };
+
+        Grid.SetColumn(latText, 1);
+        Grid.SetColumn(testBtn, 2);
+        rowGrid.Children.Add(selectBtn);
+        rowGrid.Children.Add(latText);
+        rowGrid.Children.Add(testBtn);
+        var card = NetoUiFactory.CreateCard(rowGrid, new Thickness(8, 6, 10, 6));
+        if (isSelected)
+        {
+            card.BorderBrush = NetoUiFactory.BrushResource("AccentFillColorDefaultBrush", Color.FromArgb(255, 0, 120, 212));
+            card.BorderThickness = new Thickness(1.5);
+            _selectedCardElement = card;
+        }
+        return card;
     }
 
     private static double AutoSizeOrZero(bool _) => 0;

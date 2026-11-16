@@ -286,7 +286,7 @@ public sealed class ConnectionsPageView
                 badges.Children.Add(NetoUiFactory.CreateTagBadge(item.Network.ToUpperInvariant()));
                 if (!string.IsNullOrWhiteSpace(item.Outbound))
                 {
-                    badges.Children.Add(NetoUiFactory.CreateTagBadge(item.Outbound, Color.FromArgb(255, 56, 132, 235)));
+                    badges.Children.Add(NetoUiFactory.CreateTagBadge(NetoFormat.FormatDisplayName(item.Outbound), Color.FromArgb(255, 56, 132, 235)));
                 }
                 if (!string.IsNullOrWhiteSpace(item.Rule))
                 {

@@ -138,7 +138,7 @@ pub extern "C" fn neto_call(method: *const c_char, params_json: *const c_char) -
 pub extern "C" fn neto_shutdown() -> *mut c_char {
     let out = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         if let Ok(ctrl) = global_controller() {
-            TOKIO_RUNTIME.block_on(ctrl.disconnect())?;
+            TOKIO_RUNTIME.block_on(ctrl.shutdown())?;
         }
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {

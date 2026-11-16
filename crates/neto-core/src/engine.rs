@@ -12,9 +12,9 @@ use crate::http_proxy::HttpProxyBridge;
 use crate::profile::{
     NodeSummary, ParsedProfilePayload, ProfileRecord, SubscriptionUserInfo,
     build_profile_from_raw_nodes, extract_proxy_groups_from_yaml, fetch_and_parse_subscription,
-    merge_preserved_groups, merge_preserved_latencies, parse_yaml_profile,
-    primary_select_group_index_from_yaml, recompute_proxy_groups,
-    reconcile_proxy_groups_with_nodes, resolve_group_leaf_target,
+    first_preferred_node_index, is_info_pseudo_node, merge_preserved_groups,
+    merge_preserved_latencies, parse_yaml_profile, primary_select_group_index_from_yaml,
+    recompute_proxy_groups, reconcile_proxy_groups_with_nodes, resolve_group_leaf_target,
 };
 use crate::route::{StartRouteRequest, start_route_from_json, stop_route, test_route_from_json};
 use crate::runtime::{
@@ -54,6 +54,14 @@ pub trait PlatformHooks: Send + Sync {
 
     fn clear_system_proxy(&self) -> Result<()> {
         Ok(())
+    }
+
+    fn cleanup_system_proxy_on_exit(&self, _local_ports: &[u16], force_clear: bool) -> Result<()> {
+        if force_clear {
+            self.clear_system_proxy()
+        } else {
+            Ok(())
+        }
     }
 
     fn set_autostart(&self, _enabled: bool) -> Result<()> {
@@ -131,14 +139,17 @@ impl NetoController {
         user_agent: impl Into<String>,
         hooks: Option<Arc<dyn PlatformHooks>>,
     ) -> Result<Arc<Self>> {
+        crate::runtime::init_logging();
         let data_dir = data_dir.into();
         std::fs::create_dir_all(&data_dir)
             .with_context(|| format!("create Neto data_dir {}", data_dir.display()))?;
         let store = load_store(&data_dir).unwrap_or_default();
+        let hooks = hooks.unwrap_or_else(|| Arc::new(NoopPlatformHooks));
+        let _ = hooks.cleanup_system_proxy_on_exit(&[store.settings.mixed_port], false);
         Ok(Arc::new(Self {
             data_dir,
             user_agent: user_agent.into(),
-            hooks: hooks.unwrap_or_else(|| Arc::new(NoopPlatformHooks)),
+            hooks,
             state: Mutex::new(MutableState {
                 store,
                 connecting: false,
@@ -249,13 +260,30 @@ impl NetoController {
             None => (Vec::new(), Vec::new(), 0, Vec::new()),
         };
 
+        let effective_yaml = (!guard.store.settings.custom_route_yaml.trim().is_empty())
+            .then_some(guard.store.settings.custom_route_yaml.as_str())
+            .or_else(|| active_profile.and_then(|p| p.route_config_yaml.as_deref()));
+        let primary_group_name =
+            primary_select_group_index_from_yaml(&proxy_groups, effective_yaml)
+                .and_then(|idx| proxy_groups.get(idx))
+                .map(|g| g.name.clone());
+
         match guard.store.node_sort_mode {
             NodeSortMode::Default => {}
             NodeSortMode::Latency => {
-                nodes.sort_by_key(|n| (n.latency_ms.unwrap_or(u64::MAX), n.index));
+                nodes.sort_by_key(|n| {
+                    (
+                        is_info_pseudo_node(&n.name),
+                        n.latency_ms.unwrap_or(u64::MAX),
+                        n.index,
+                    )
+                });
             }
             NodeSortMode::Name => {
-                nodes.sort_by(|a, b| a.name.cmp(&b.name));
+                nodes.sort_by(|a, b| {
+                    (is_info_pseudo_node(&a.name), a.name.to_lowercase())
+                        .cmp(&(is_info_pseudo_node(&b.name), b.name.to_lowercase()))
+                });
             }
         }
 
@@ -278,6 +306,7 @@ impl NetoController {
             nodes_testing: guard.nodes_testing,
             nodes,
             proxy_groups,
+            primary_group_name,
             rule_count,
             rules_preview,
             telemetry,
@@ -339,10 +368,11 @@ impl NetoController {
         };
         {
             let mut guard = self.state.lock().expect("controller state lock poisoned");
+            let default_idx = first_preferred_node_index(&record.nodes);
             guard.store.profiles.push(record);
             if guard.store.active_profile_id.is_none() {
                 guard.store.active_profile_id = Some(id.clone());
-                guard.store.selected_node_index = 0;
+                guard.store.selected_node_index = default_idx;
             }
         }
         self.persist()?;
@@ -375,10 +405,11 @@ impl NetoController {
         };
         {
             let mut guard = self.state.lock().expect("controller state lock poisoned");
+            let default_idx = first_preferred_node_index(&record.nodes);
             guard.store.profiles.push(record);
             if guard.store.active_profile_id.is_none() {
                 guard.store.active_profile_id = Some(id.clone());
-                guard.store.selected_node_index = 0;
+                guard.store.selected_node_index = default_idx;
             }
         }
         self.persist()?;
@@ -446,13 +477,17 @@ impl NetoController {
                             existing.rule_count = payload.rule_count;
                             existing.rules_preview = payload.rules_preview.clone();
                         }
-                        existing.nodes.len()
+                        (
+                            existing.nodes.len(),
+                            first_preferred_node_index(&existing.nodes),
+                        )
                     });
-            if let Some(nodes_len) = existing_nodes_len {
+            if let Some((nodes_len, preferred_idx)) = existing_nodes_len {
                 if guard.store.selected_node_index >= nodes_len {
-                    guard.store.selected_node_index = 0;
+                    guard.store.selected_node_index = preferred_idx;
                 }
             } else {
+                let preferred_idx = first_preferred_node_index(&payload.nodes);
                 guard.store.profiles.insert(
                     0,
                     ProfileRecord {
@@ -472,6 +507,7 @@ impl NetoController {
                         rules_preview: payload.rules_preview,
                     },
                 );
+                guard.store.selected_node_index = preferred_idx;
             }
             guard.store.active_profile_id = Some(id.to_string());
         }
@@ -548,12 +584,12 @@ impl NetoController {
                     prof.raw_yaml = payload.raw_yaml;
                     prof.rule_count = payload.rule_count;
                     prof.rules_preview = payload.rules_preview;
-                    prof.nodes.len()
+                    (prof.nodes.len(), first_preferred_node_index(&prof.nodes))
                 });
-            if let Some(nodes_len) = updated_len
+            if let Some((nodes_len, preferred_idx)) = updated_len
                 && guard.store.selected_node_index >= nodes_len
             {
-                guard.store.selected_node_index = 0;
+                guard.store.selected_node_index = preferred_idx;
             }
         }
         self.persist()
@@ -672,12 +708,15 @@ impl NetoController {
     pub async fn select_profile(self: &Arc<Self>, id: &str) -> Result<()> {
         let was_connected = {
             let mut guard = self.state.lock().expect("controller state lock poisoned");
-            ensure!(
-                guard.store.profiles.iter().any(|p| p.id == id),
-                "profile not found: {id}"
-            );
+            let preferred_idx = guard
+                .store
+                .profiles
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| first_preferred_node_index(&p.nodes))
+                .with_context(|| format!("profile not found: {id}"))?;
             guard.store.active_profile_id = Some(id.to_string());
-            guard.store.selected_node_index = 0;
+            guard.store.selected_node_index = preferred_idx;
             guard.active.is_some()
         };
         self.persist()?;
@@ -697,7 +736,12 @@ impl NetoController {
             guard.store.profiles.retain(|p| p.id != id);
             if was_active {
                 guard.store.active_profile_id = guard.store.profiles.first().map(|p| p.id.clone());
-                guard.store.selected_node_index = 0;
+                guard.store.selected_node_index = guard
+                    .store
+                    .profiles
+                    .first()
+                    .map(|p| first_preferred_node_index(&p.nodes))
+                    .unwrap_or(0);
             }
             was_active && guard.active.is_some()
         };
@@ -879,12 +923,33 @@ impl NetoController {
         let allowed: BTreeSet<String> = {
             let guard = self.state.lock().expect("controller state lock poisoned");
             let prof = active_profile_ref(&guard.store).context("暂无可用订阅")?;
-            let grp = prof
+            ensure!(
+                prof.proxy_groups.iter().any(|g| g.name == group_name),
+                "未找到策略组: {group_name}"
+            );
+            let group_map: BTreeMap<&str, &[String]> = prof
                 .proxy_groups
                 .iter()
-                .find(|g| g.name == group_name)
-                .with_context(|| format!("未找到策略组: {group_name}"))?;
-            grp.proxies.iter().cloned().collect()
+                .map(|g| (g.name.as_str(), g.proxies.as_slice()))
+                .collect();
+            let mut visited_groups = BTreeSet::new();
+            let mut stack = vec![group_name.to_string()];
+            let mut leaf_names = BTreeSet::new();
+            while let Some(cur) = stack.pop() {
+                if !visited_groups.insert(cur.clone()) {
+                    continue;
+                }
+                if let Some(proxies) = group_map.get(cur.as_str()) {
+                    for item in *proxies {
+                        if group_map.contains_key(item.as_str()) {
+                            stack.push(item.clone());
+                        } else {
+                            leaf_names.insert(item.clone());
+                        }
+                    }
+                }
+            }
+            leaf_names
         };
         self.test_nodes_subset(Some(allowed)).await
     }
@@ -907,6 +972,17 @@ impl NetoController {
             guard.nodes_testing = true;
             (nodes, dns_url, test_url, profile_id)
         };
+        let prev_group_targets: Vec<(String, Option<String>)> = {
+            let guard = self.state.lock().expect("controller state lock poisoned");
+            active_profile_ref(&guard.store)
+                .map(|p| {
+                    p.proxy_groups
+                        .iter()
+                        .map(|g| (g.name.clone(), g.now.clone()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
 
         let (target_host, target_port, target_tls) = match parse_probe_url(&test_url) {
             Ok(v) => v,
@@ -921,8 +997,14 @@ impl NetoController {
 
         let semaphore = Arc::new(Semaphore::new(8));
         let mut join_set = JoinSet::new();
+        let has_real_nodes = nodes
+            .iter()
+            .any(|n| n.supported && !is_info_pseudo_node(&n.name));
         for node in nodes {
             if !node.supported {
+                continue;
+            }
+            if has_real_nodes && is_info_pseudo_node(&node.name) {
                 continue;
             }
             if let Some(allowed) = &filter_names
@@ -976,11 +1058,29 @@ impl NetoController {
             }
         }
 
-        self.state
-            .lock()
-            .expect("controller state lock poisoned")
-            .nodes_testing = false;
-        self.persist()
+        let should_reconnect = {
+            let mut guard = self.state.lock().expect("controller state lock poisoned");
+            guard.nodes_testing = false;
+            let now_targets: Vec<(String, Option<String>)> = active_profile_ref(&guard.store)
+                .map(|p| {
+                    p.proxy_groups
+                        .iter()
+                        .map(|g| (g.name.clone(), g.now.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            guard.active.is_some()
+                && guard.store.settings.routing_mode == RoutingMode::Rule
+                && now_targets != prev_group_targets
+        };
+        self.persist()?;
+        #[cfg(not(target_os = "android"))]
+        if should_reconnect {
+            let _ = self.connect().await;
+        }
+        #[cfg(target_os = "android")]
+        let _ = should_reconnect;
+        Ok(())
     }
 
     pub async fn probe_active_tunnel(&self) -> Result<Option<u64>> {
@@ -1054,6 +1154,51 @@ impl NetoController {
         self.disconnect_unlocked().await
     }
 
+    pub async fn shutdown(self: &Arc<Self>) -> Result<()> {
+        let (initial_ports, had_sys_proxy, bridge) = {
+            let mut st = self.state.lock().expect("controller state lock poisoned");
+            let mut ports = vec![st.store.settings.mixed_port];
+            let bridge = st.http_bridge.take();
+            if let Some(b) = &bridge
+                && !ports.contains(&b.port())
+            {
+                ports.push(b.port());
+            }
+            let sys = st.system_proxy_active;
+            st.system_proxy_active = false;
+            (ports, sys, bridge)
+        };
+        if let Some(b) = bridge {
+            b.stop();
+        }
+        let _ = self
+            .hooks
+            .cleanup_system_proxy_on_exit(&initial_ports, had_sys_proxy);
+
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), self.disconnect()).await;
+
+        let (final_ports, late_sys_proxy, late_bridge) = {
+            let mut st = self.state.lock().expect("controller state lock poisoned");
+            let mut ports = initial_ports;
+            let bridge = st.http_bridge.take();
+            if let Some(b) = &bridge
+                && !ports.contains(&b.port())
+            {
+                ports.push(b.port());
+            }
+            let sys = st.system_proxy_active;
+            st.system_proxy_active = false;
+            (ports, sys, bridge)
+        };
+        if let Some(b) = late_bridge {
+            b.stop();
+        }
+        let _ = self
+            .hooks
+            .cleanup_system_proxy_on_exit(&final_ports, late_sys_proxy);
+        Ok(())
+    }
+
     pub async fn toggle_connect(self: &Arc<Self>) -> Result<bool> {
         let is_connected = self
             .state
@@ -1082,9 +1227,11 @@ impl NetoController {
             (active, bridge, sys)
         };
         if had_sys_proxy {
+            if let Some(b) = bridge {
+                b.stop();
+            }
             let _ = self.hooks.clear_system_proxy();
-        }
-        if let Some(b) = bridge {
+        } else if let Some(b) = bridge {
             b.stop();
         }
         if let Some(rt) = active {
@@ -1283,7 +1430,7 @@ impl NetoController {
             bypass,
             ipv6: settings.ipv6_enabled,
             tcp_timeout_secs: None,
-            udp_timeout_secs: Some(60),
+            udp_timeout_secs: Some(30),
             max_sessions: Some(2048),
             exit_on_fatal_error: Some(false),
         };
@@ -1382,7 +1529,7 @@ impl NetoController {
                 bypass: None,
                 ipv6: settings.ipv6_enabled,
                 tcp_timeout_secs: None,
-                udp_timeout_secs: Some(60),
+                udp_timeout_secs: Some(30),
                 max_sessions: Some(2048),
                 exit_on_fatal_error: Some(false),
             };
@@ -1520,10 +1667,11 @@ impl NetoController {
     }
 
     pub fn set_system_proxy_enabled(&self, enabled: bool) -> Result<()> {
-        let action = {
+        let (action, mixed_port) = {
             let mut st = self.state.lock().expect("controller state lock poisoned");
             st.store.settings.system_proxy_enabled = enabled;
-            match (&st.active, &st.http_bridge) {
+            let mp = st.store.settings.mixed_port;
+            let act = match (&st.active, &st.http_bridge) {
                 (Some(rt), Some(bridge)) => Some((
                     enabled,
                     bridge.port(),
@@ -1531,7 +1679,8 @@ impl NetoController {
                     st.store.settings.system_proxy_bypass.clone(),
                 )),
                 _ => None,
-            }
+            };
+            (act, mp)
         };
         self.persist()?;
         if let Some((on, http_port, socks_port, bypass)) = action {
@@ -1549,6 +1698,10 @@ impl NetoController {
                     .expect("controller state lock poisoned")
                     .system_proxy_active = false;
             }
+        } else if !enabled {
+            let _ = self
+                .hooks
+                .cleanup_system_proxy_on_exit(&[mixed_port], false);
         }
         Ok(())
     }
@@ -2190,6 +2343,11 @@ fn load_store(data_dir: &Path) -> Result<PersistedStore> {
             );
         }
     }
+    if let Some(active_prof) = active_profile_ref(&store)
+        && store.selected_node_index >= active_prof.nodes.len()
+    {
+        store.selected_node_index = first_preferred_node_index(&active_prof.nodes);
+    }
     Ok(store)
 }
 
@@ -2232,4 +2390,5 @@ pub fn parse_probe_url(raw: &str) -> Result<(String, u16, bool)> {
 
 pub fn init_rustls_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
+    crate::runtime::init_logging();
 }

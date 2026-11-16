@@ -127,7 +127,9 @@ impl NodesView {
 
         let filter = self.filter_text.borrow().clone();
         let sig = format!(
-            "{:?}:{}:{}:{}:{}:{}",
+            "{:?}:{:?}:{:?}:{}:{}:{}:{}:{}",
+            snap.active_profile_id,
+            snap.settings.routing_mode,
             snap.node_sort_mode,
             snap.selected_node_index,
             filter,
@@ -140,8 +142,9 @@ impl NodesView {
             snap.nodes
                 .iter()
                 .map(|n| format!(
-                    "{}:{:?}:{:?}",
+                    "{}:{}:{:?}:{:?}",
                     n.index,
+                    n.name,
                     n.latency_ms,
                     n.last_error.is_some()
                 ))
@@ -172,7 +175,9 @@ impl NodesView {
             .iter()
             .filter(|g| !g.proxies.is_empty())
             .collect();
-        if !non_empty_groups.is_empty() {
+        if snap.settings.routing_mode == neto_core::RoutingMode::Rule
+            && !non_empty_groups.is_empty()
+        {
             let grp_section = adw::PreferencesGroup::builder().title("策略组").build();
             for grp in non_empty_groups {
                 let gname = grp.name.clone();
@@ -187,10 +192,22 @@ impl NodesView {
                     .as_deref()
                     .or(grp.selected.as_deref())
                     .unwrap_or_else(|| grp.proxies[0].as_str());
+                let has_real_nodes = snap
+                    .nodes
+                    .iter()
+                    .any(|n| n.supported && !neto_core::profile::is_info_pseudo_node(&n.name));
                 if grp.group_type.eq_ignore_ascii_case("select") {
-                    let refs: Vec<&str> = grp.proxies.iter().map(String::as_str).collect();
-                    let sel_idx = grp
+                    let filtered_proxies: Vec<String> = grp
                         .proxies
+                        .iter()
+                        .filter(|p| !has_real_nodes || !neto_core::profile::is_info_pseudo_node(p))
+                        .cloned()
+                        .collect();
+                    if filtered_proxies.is_empty() {
+                        continue;
+                    }
+                    let refs: Vec<&str> = filtered_proxies.iter().map(String::as_str).collect();
+                    let sel_idx = filtered_proxies
                         .iter()
                         .position(|p| p == active_target)
                         .unwrap_or(0) as u32;
@@ -199,12 +216,18 @@ impl NodesView {
                         .model(&gtk::StringList::new(&refs))
                         .selected(sel_idx)
                         .build();
-                    let proxies_clone = grp.proxies.clone();
                     let ctrl = self.controller.clone();
+                    let rt = self.rt.clone();
                     let gname_c = gname.clone();
                     combo.connect_selected_notify(move |c| {
-                        if let Some(target) = proxies_clone.get(c.selected() as usize) {
+                        if let Some(target) = filtered_proxies.get(c.selected() as usize) {
                             let _ = ctrl.select_group_proxy(&gname_c, target);
+                            if ctrl.snapshot().connection.connected {
+                                let ctrl = ctrl.clone();
+                                rt.spawn(async move {
+                                    let _ = ctrl.connect().await;
+                                });
+                            }
                         }
                     });
                     grp_section.add(&combo);
@@ -233,7 +256,14 @@ impl NodesView {
         }
 
         let group = adw::PreferencesGroup::new();
+        let has_real_nodes = snap
+            .nodes
+            .iter()
+            .any(|n| n.supported && !neto_core::profile::is_info_pseudo_node(&n.name));
         for node in &snap.nodes {
+            if has_real_nodes && neto_core::profile::is_info_pseudo_node(&node.name) {
+                continue;
+            }
             if !filter.is_empty()
                 && !node.name.to_lowercase().contains(&filter)
                 && !node.protocol_label.to_lowercase().contains(&filter)

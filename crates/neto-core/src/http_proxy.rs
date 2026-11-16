@@ -236,18 +236,27 @@ pub async fn connect_via_socks5(
     let mut stream = TcpStream::connect(socks_addr)
         .await
         .with_context(|| format!("connect local SOCKS5 {socks_addr}"))?;
-    stream.write_all(&[0x05, 0x01, 0x00]).await?;
+    let _ = stream.set_nodelay(true);
+    let mut req = Vec::with_capacity(10 + target_host.len());
+    req.extend_from_slice(&[
+        0x05,
+        0x01,
+        0x00,
+        0x05,
+        0x01,
+        0x00,
+        0x03,
+        target_host.len() as u8,
+    ]);
+    req.extend_from_slice(target_host.as_bytes());
+    req.extend_from_slice(&target_port.to_be_bytes());
+    stream.write_all(&req).await?;
     let mut greeting = [0u8; 2];
     stream.read_exact(&mut greeting).await?;
     ensure!(
         greeting == [0x05, 0x00],
         "SOCKS5 greeting rejected: {greeting:02x?}"
     );
-    let mut req = Vec::with_capacity(7 + target_host.len());
-    req.extend_from_slice(&[0x05, 0x01, 0x00, 0x03, target_host.len() as u8]);
-    req.extend_from_slice(target_host.as_bytes());
-    req.extend_from_slice(&target_port.to_be_bytes());
-    stream.write_all(&req).await?;
     let mut hdr = [0u8; 4];
     stream.read_exact(&mut hdr).await?;
     if hdr[0] != 0x05 || hdr[1] != 0x00 {

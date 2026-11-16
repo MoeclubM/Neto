@@ -83,7 +83,6 @@ struct RouteSession {
     router_task: JoinHandle<Result<()>>,
     outbound_tasks: Vec<JoinHandle<Result<()>>>,
     ingress_task: JoinHandle<()>,
-    _log_task: JoinHandle<()>,
     _event_task: JoinHandle<()>,
     _core: aerion::ProxyCore,
 }
@@ -445,17 +444,9 @@ pub(crate) async fn start_route_runtime(request: StartRouteRequest) -> Result<Ro
 pub async fn start_route_from_json(input: &str) -> Result<String> {
     let request: StartRouteRequest =
         serde_json::from_str(input).context("parse start route request")?;
-    let log_bridge = aerion::LogBridge::new();
+    crate::runtime::init_logging();
     let runtime = start_route_runtime(request).await?;
     let session_id = NEXT_ROUTE_SESSION_ID.fetch_add(1, Ordering::SeqCst);
-    let log_task = {
-        let mut rx = log_bridge.subscribe();
-        tokio::spawn(async move {
-            while let Some(entry) = rx.recv().await {
-                on_log(&entry.level.to_string(), &entry.message);
-            }
-        })
-    };
     let event_task = {
         let mut rx = runtime.core.subscribe_events();
         tokio::spawn(async move {
@@ -474,7 +465,6 @@ pub async fn start_route_from_json(input: &str) -> Result<String> {
                 router_task: runtime.router_task,
                 outbound_tasks: runtime.outbound_tasks,
                 ingress_task: runtime.ingress_task,
-                _log_task: log_task,
                 _event_task: event_task,
                 _core: runtime.core,
             },
@@ -502,7 +492,6 @@ pub async fn stop_route(session_id: u64) -> Result<String> {
     for task in session.outbound_tasks {
         task.abort();
     }
-    session._log_task.abort();
     session._event_task.abort();
     Ok(json!({"ok": true, "session_id": session_id}).to_string())
 }

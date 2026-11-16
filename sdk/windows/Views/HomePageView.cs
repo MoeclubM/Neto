@@ -356,15 +356,45 @@ public sealed class HomePageView
             _endpointLabel.Text = $"预设监听 {addr}";
         }
 
-        var sel = snap.SelectedNode;
         if (snap.Settings.RoutingMode == "direct")
         {
             _nodeNameLabel.Text = "DIRECT";
             _nodeMetaLabel.Text = "直连出站";
         }
-        else if (sel != null)
+        else if (snap.Settings.RoutingMode == "rule" && snap.PrimarySelectGroup is { } primaryGrp)
         {
-            _nodeNameLabel.Text = sel.Name;
+            var directTarget = primaryGrp.Now ?? primaryGrp.Selected;
+            var leafName = snap.ResolveGroupLeafTarget(primaryGrp.Name);
+            if (string.Equals(leafName, "DIRECT", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(leafName, "REJECT", StringComparison.OrdinalIgnoreCase))
+            {
+                _nodeNameLabel.Text = leafName!.ToUpperInvariant();
+                _nodeMetaLabel.Text = $"{primaryGrp.Name} · {(leafName.Equals("DIRECT", StringComparison.OrdinalIgnoreCase) ? "直连出站" : "拦截请求")}";
+            }
+            else
+            {
+                var leafNode = (!string.IsNullOrEmpty(leafName) ? snap.Nodes.FirstOrDefault(n => n.Name == leafName) : null)
+                    ?? snap.SelectedNode;
+                if (leafNode != null)
+                {
+                    _nodeNameLabel.Text = NetoFormat.FormatDisplayName(leafNode.Name);
+                    var chainPrefix = !string.IsNullOrEmpty(directTarget) && directTarget != leafNode.Name
+                        ? $"{primaryGrp.Name} → {NetoFormat.FormatDisplayName(directTarget)}"
+                        : primaryGrp.Name;
+                    _nodeMetaLabel.Text = leafNode.LatencyMs.HasValue
+                        ? $"{chainPrefix} · {leafNode.ProtocolLabel} · {leafNode.LatencyMs.Value} ms"
+                        : $"{chainPrefix} · {leafNode.ProtocolLabel}";
+                }
+                else
+                {
+                    _nodeNameLabel.Text = "暂无可用节点";
+                    _nodeMetaLabel.Text = primaryGrp.Name;
+                }
+            }
+        }
+        else if (snap.SelectedNode is { } sel)
+        {
+            _nodeNameLabel.Text = NetoFormat.FormatDisplayName(sel.Name);
             _nodeMetaLabel.Text = sel.LatencyMs.HasValue
                 ? $"{sel.ProtocolLabel} · {sel.LatencyMs.Value} ms"
                 : sel.ProtocolLabel;

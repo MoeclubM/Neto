@@ -10,16 +10,86 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, Once};
 use std::time::Instant;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
+use tracing_subscriber::prelude::*;
 
 type Callback = Box<dyn Fn(String, String) + Send + Sync>;
 static LOG_CALLBACK: Lazy<StdMutex<Option<Callback>>> = Lazy::new(|| StdMutex::new(None));
 static EVENT_CALLBACK: Lazy<StdMutex<Option<Callback>>> = Lazy::new(|| StdMutex::new(None));
+static LOG_INIT: Once = Once::new();
+static NETO_LOG_LOGGER: NetoLogFacade = NetoLogFacade;
+
+struct NetoLogFacade;
+
+impl log::Log for NetoLogFacade {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let level = record.level().as_str().to_ascii_lowercase();
+        let target = record.target();
+        let msg = if target.is_empty() {
+            format!("{}", record.args())
+        } else {
+            format!("[{target}] {}", record.args())
+        };
+        on_log(&level, &msg);
+    }
+
+    fn flush(&self) {}
+}
+
+fn format_bridge_entry(entry: &aerion::LogEntry) -> String {
+    let mut parts = Vec::new();
+    if !entry.message.trim().is_empty() {
+        parts.push(entry.message.trim().to_string());
+    }
+    for (k, v) in &entry.fields {
+        parts.push(format!("{k}={v}"));
+    }
+    let body = parts.join(" ");
+    if entry.target.trim().is_empty() {
+        body
+    } else if body.is_empty() {
+        format!("[{}]", entry.target)
+    } else {
+        format!("[{}] {body}", entry.target)
+    }
+}
+
+pub fn init_logging() {
+    LOG_INIT.call_once(|| {
+        if log::set_logger(&NETO_LOG_LOGGER).is_ok() {
+            log::set_max_level(log::LevelFilter::Info);
+        }
+        let bridge = aerion::LogBridge::new();
+        let mut rx = bridge.subscribe();
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing::level_filters::LevelFilter::INFO)
+            .with(bridge.layer());
+        if tracing::subscriber::set_global_default(subscriber).is_ok() {
+            let _ = std::thread::Builder::new()
+                .name("neto-log-bridge".into())
+                .spawn(move || {
+                    while let Some(entry) = rx.blocking_recv() {
+                        let text = format_bridge_entry(&entry);
+                        if !text.is_empty() {
+                            on_log(&entry.level.to_ascii_lowercase(), &text);
+                        }
+                    }
+                });
+        }
+    });
+}
 
 pub fn set_log_callback<F>(f: F)
 where
@@ -151,7 +221,6 @@ struct StartSocksRequest {
 struct SocksSession {
     _ingress_task: JoinHandle<()>,
     _task: JoinHandle<Result<()>>,
-    _log_task: Option<JoinHandle<()>>,
     _event_task: Option<JoinHandle<()>>,
     _core: Option<aerion::ProxyCore>,
 }
@@ -315,22 +384,14 @@ pub(crate) async fn start_aerion_socks(
 }
 
 pub async fn start_socks_from_json(input: &str) -> Result<String> {
+    init_logging();
     let request: StartSocksRequest =
         serde_json::from_str(input).context("parse start SOCKS request")?;
-    let log_bridge = aerion::LogBridge::new();
     let session_id = NEXT_SOCKS_SESSION_ID.fetch_add(1, Ordering::SeqCst);
     let matcher = matcher_for_node(&request.node);
     let (inner_socks, task, core, _) = start_aerion_socks(request.node, true).await?;
     let (socks_addr, ingress_task) = spawn_tracked_socks_ingress(inner_socks, matcher).await?;
 
-    let log_task = {
-        let mut rx = log_bridge.subscribe();
-        tokio::spawn(async move {
-            while let Some(entry) = rx.recv().await {
-                on_log(&entry.level.to_string(), &entry.message);
-            }
-        })
-    };
     let event_task = core.as_ref().map(|core| {
         let mut rx = core.subscribe_events();
         tokio::spawn(async move {
@@ -349,7 +410,6 @@ pub async fn start_socks_from_json(input: &str) -> Result<String> {
             SocksSession {
                 _ingress_task: ingress_task,
                 _task: task,
-                _log_task: Some(log_task),
                 _event_task: event_task,
                 _core: core,
             },
@@ -374,9 +434,6 @@ pub async fn stop_socks(session_id: u64) -> Result<String> {
     }
     session._ingress_task.abort();
     session._task.abort();
-    if let Some(task) = session._log_task {
-        task.abort();
-    }
     if let Some(task) = session._event_task {
         task.abort();
     }
@@ -548,6 +605,7 @@ mod platform {
     }
 
     pub async fn start(input: &str) -> Result<String> {
+        init_logging();
         let request: StartVpnRequest =
             serde_json::from_str(input).context("parse start VPN request")?;
         let mtu = request.mtu;
@@ -606,7 +664,6 @@ mod platform {
         let virtual_dns_pool = tun_config.virtual_dns_pool.clone();
         tun_config.verbosity = TunVerbosity::Info;
 
-        let log_bridge = aerion::LogBridge::new();
         let runtime = spawn_tun(tun_config).context("spawn Aerion TUN runtime")?;
         let shutdown = runtime.shutdown_token();
         let session_id = NEXT_VPN_SESSION_ID.fetch_add(1, Ordering::SeqCst);
@@ -622,15 +679,6 @@ mod platform {
                     _core: core.clone(),
                 },
             );
-
-        let log_task_inner = {
-            let mut rx = log_bridge.subscribe();
-            tokio::spawn(async move {
-                while let Some(entry) = rx.recv().await {
-                    on_log(&entry.level.to_string(), &entry.message);
-                }
-            })
-        };
 
         let event_task_inner = core.as_ref().map(|core| {
             let mut event_rx = core.subscribe_events();
@@ -658,7 +706,6 @@ mod platform {
                 for t in session.proxy_tasks {
                     t.abort();
                 }
-                log_task_inner.abort();
                 if let Some(task) = event_task_inner {
                     task.abort();
                 }
@@ -711,7 +758,6 @@ mod platform {
         finished: tokio::sync::oneshot::Receiver<std::result::Result<(), String>>,
         proxy_tasks: Vec<JoinHandle<Result<()>>>,
         ingress_task: JoinHandle<()>,
-        _log_task: Option<JoinHandle<()>>,
         _event_task: Option<JoinHandle<()>>,
         _core: Option<aerion::ProxyCore>,
     }
@@ -738,6 +784,7 @@ mod platform {
     }
 
     pub async fn start(input: &str) -> Result<String> {
+        init_logging();
         let request: StartVpnRequest =
             serde_json::from_str(input).context("parse start VPN request")?;
         let mtu = request.mtu;
@@ -750,12 +797,7 @@ mod platform {
         };
         let dns_addr: IpAddr = request.dns_addr.parse().context("parse VPN DNS address")?;
 
-        if VPN_SESSIONS
-            .lock()
-            .expect("VPN session map lock poisoned")
-            .is_empty()
-            && let Some(iface) = aerion::detect_default_outbound_interface()
-        {
+        if let Some(iface) = aerion::detect_default_outbound_interface() {
             aerion::set_outbound_interface(iface);
         }
 
@@ -817,7 +859,7 @@ mod platform {
         if let Some(tcp_timeout_secs) = request.tcp_timeout_secs {
             tun_config.tcp_timeout_secs = tcp_timeout_secs;
         }
-        tun_config.udp_timeout_secs = request.udp_timeout_secs.unwrap_or(60);
+        tun_config.udp_timeout_secs = request.udp_timeout_secs.unwrap_or(30);
         tun_config.max_sessions = request.max_sessions.unwrap_or(2048);
         if let Some(exit_on_fatal_error) = request.exit_on_fatal_error {
             tun_config.exit_on_fatal_error = exit_on_fatal_error;
@@ -825,7 +867,6 @@ mod platform {
         let virtual_dns_pool = tun_config.virtual_dns_pool.clone();
         tun_config.verbosity = TunVerbosity::Info;
 
-        let log_bridge = aerion::LogBridge::new();
         let remote_pipe = request
             .pipe_name
             .as_deref()
@@ -878,15 +919,6 @@ mod platform {
         let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
         let session_id = NEXT_VPN_SESSION_ID.fetch_add(1, Ordering::SeqCst);
 
-        let log_task = {
-            let mut rx = log_bridge.subscribe();
-            Some(tokio::spawn(async move {
-                while let Some(entry) = rx.recv().await {
-                    on_log(&entry.level.to_string(), &entry.message);
-                }
-            }))
-        };
-
         let event_task = core.as_ref().map(|core| {
             let mut event_rx = core.subscribe_events();
             tokio::spawn(async move {
@@ -907,7 +939,6 @@ mod platform {
                     finished: finished_rx,
                     proxy_tasks,
                     ingress_task,
-                    _log_task: log_task,
                     _event_task: event_task,
                     _core: core,
                 },
@@ -936,9 +967,6 @@ mod platform {
                 }
                 session.ingress_task.abort();
                 abort_tasks(session.proxy_tasks);
-                if let Some(task) = session._log_task {
-                    task.abort();
-                }
                 if let Some(task) = session._event_task {
                     task.abort();
                 }
@@ -979,9 +1007,6 @@ mod platform {
         }
         session.ingress_task.abort();
         abort_tasks(session.proxy_tasks);
-        if let Some(task) = session._log_task {
-            task.abort();
-        }
         if let Some(task) = session._event_task {
             task.abort();
         }

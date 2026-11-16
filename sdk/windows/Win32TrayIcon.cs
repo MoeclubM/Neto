@@ -5,6 +5,8 @@ namespace Neto.Sdk.Windows;
 public sealed class Win32TrayIcon : IDisposable
 {
     private const uint WM_NULL = 0x0000;
+    private const uint WM_DESTROY = 0x0002;
+    private const uint WM_QUERYENDSESSION = 0x0011;
     private const uint WM_ENDSESSION = 0x0016;
     private const uint WM_USER = 0x0400;
     private const uint WM_TRAYICON = WM_USER + 42;
@@ -103,12 +105,15 @@ public sealed class Win32TrayIcon : IDisposable
         CanUseTun = snap.Connection.CanUseTun;
         RoutingMode = snap.Settings.RoutingMode;
         ActiveSessions = snap.Telemetry.ActiveSessions;
-        _selectedNodeIndex = snap.SelectedNodeIndex;
-        _nodes = snap.Nodes.Where(n => n.Supported).Take(30).ToList();
+        _selectedNodeIndex = snap.EffectiveActiveNode?.Index ?? snap.SelectedNodeIndex;
+        var realSupported = snap.Nodes.Where(n => n.Supported && !NetoFormat.IsInfoPseudoNode(n.Name)).ToList();
+        _nodes = (realSupported.Count > 0 ? realSupported : snap.Nodes.Where(n => n.Supported)).Take(30).ToList();
 
         if (snap.Connection.Connected)
         {
-            var nodeLabel = string.IsNullOrWhiteSpace(snap.Connection.ActiveNodeName) ? "已连接" : snap.Connection.ActiveNodeName;
+            var nodeLabel = string.IsNullOrWhiteSpace(snap.Connection.ActiveNodeName)
+                ? "已连接"
+                : NetoFormat.FormatDisplayName(snap.Connection.ActiveNodeName);
             var up = NetoFormat.FormatSpeed(snap.Telemetry.UploadSpeedBps);
             var down = NetoFormat.FormatSpeed(snap.Telemetry.DownloadSpeedBps);
             StatusSummary = $"{nodeLabel}  ↑{up} ↓{down}";
@@ -164,7 +169,15 @@ public sealed class Win32TrayIcon : IDisposable
             Shell_NotifyIconW(NIM_ADD, ref _nid);
             return IntPtr.Zero;
         }
+        if (msg == WM_QUERYENDSESSION)
+        {
+            return new IntPtr(1);
+        }
         if (msg == WM_ENDSESSION && wParam != IntPtr.Zero)
+        {
+            SessionEnding?.Invoke();
+        }
+        if (msg == WM_DESTROY && !_disposed)
         {
             SessionEnding?.Invoke();
         }
@@ -241,7 +254,8 @@ public sealed class Win32TrayIcon : IDisposable
                         var n = _nodes[i];
                         var cmdId = (uint)(1000 + i);
                         nodeIndexLookup[(int)cmdId] = n.Index;
-                        var label = n.LatencyMs.HasValue ? $"{n.Name}  ({n.LatencyMs.Value} ms)" : n.Name;
+                        var dispName = NetoFormat.FormatDisplayName(n.Name);
+                        var label = n.LatencyMs.HasValue ? $"{dispName}  ({n.LatencyMs.Value} ms)" : dispName;
                         AppendMenuW(hNodesMenu, MF_STRING, cmdId, EscapeMenuText(label));
                         if (n.Index == _selectedNodeIndex) activeCmd = cmdId;
                     }

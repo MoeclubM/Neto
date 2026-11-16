@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "0.0.11"
+  #define MyAppVersion "0.0.12"
 #endif
 
 #ifndef PublishDir
@@ -82,7 +82,15 @@ procedure StopRunningNeto();
 var
   ResultCode: Integer;
 begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM Neto.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(350);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Neto.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if RegKeyExists(HKCU, 'Software\Neto\SystemProxy') then
+  begin
+    RegWriteDWordValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Internet Settings', 'ProxyEnable', 0);
+    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Internet Settings', 'ProxyServer');
+    RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Neto\SystemProxy');
+  end;
   if HasInstalledTunService() then
     RunServiceCommand('stop --id "Neto"');
 end;

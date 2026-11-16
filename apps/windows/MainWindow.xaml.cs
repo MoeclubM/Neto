@@ -46,6 +46,7 @@ public sealed partial class MainWindow : Window
 
         var dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Neto");
         _client = new NetoClient(dataDir, "Neto", "Aerion", DispatcherQueue);
+        Closed += (_, _) => _client.Dispose();
 
         _homeView = new HomePageView(
             _client,

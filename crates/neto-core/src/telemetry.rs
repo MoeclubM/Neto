@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_SERIES_SAMPLES: usize = 60;
-const MAX_LOG_ENTRIES: usize = 500;
+const MAX_LOG_ENTRIES: usize = 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {

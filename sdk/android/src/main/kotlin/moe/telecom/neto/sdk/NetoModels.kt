@@ -235,6 +235,7 @@ data class NetoSnapshot(
     val nodesTesting: Boolean = false,
     val nodes: List<NetoNodeItem> = emptyList(),
     val proxyGroups: List<NetoProxyGroup> = emptyList(),
+    val primaryGroupName: String? = null,
     val ruleCount: Int = 0,
     val rulesPreview: List<String> = emptyList(),
     val telemetry: NetoTelemetry = NetoTelemetry(),
@@ -247,8 +248,14 @@ data class NetoSnapshot(
         get() = profiles.firstOrNull { it.active } ?: profiles.firstOrNull()
 
     val primarySelectGroup: NetoProxyGroup?
-        get() = proxyGroups.firstOrNull {
-            it.isManualSelect && it.name in setOf("代理选择", "节点选择", "Proxy", "PROXY", "🚀 节点选择")
+        get() = primaryGroupName?.takeIf { it.isNotBlank() }?.let { target ->
+            proxyGroups.firstOrNull { it.name == target }
+        } ?: proxyGroups.firstOrNull {
+            it.isManualSelect && (
+                it.name in setOf("代理选择", "节点选择", "Proxy", "PROXY", "PassGFW", "🚀 节点选择") ||
+                    it.name.contains("节点选择") ||
+                    it.name.contains("代理选择")
+                )
         } ?: proxyGroups.firstOrNull { it.isManualSelect } ?: proxyGroups.firstOrNull()
 
     fun resolveGroupLeafTarget(groupName: String): String? {
@@ -373,6 +380,7 @@ data class NetoSnapshot(
                         )
                     }
                 },
+                primaryGroupName = if (obj.isNull("primary_group_name")) null else obj.optString("primary_group_name", "").takeIf { it.isNotBlank() },
                 ruleCount = obj.optInt("rule_count", 0),
                 rulesPreview = obj.optJSONArray("rules_preview").toStringList(),
                 telemetry = NetoTelemetry(
@@ -448,4 +456,29 @@ fun formatNetoUnixDate(unixSec: Long): String {
 fun formatNetoTimeMs(epochMs: Long): String {
     if (epochMs <= 0L) return "-"
     return SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(epochMs))
+}
+
+private val NETO_INFO_NODE_KEYWORDS = listOf(
+    "剩余流量",
+    "距离下次重置",
+    "套餐到期",
+    "到期时间",
+    "有效期限",
+    "流量剩余",
+    "已用流量",
+    "总流量",
+    "官网：",
+    "官网:",
+    "网址：",
+    "网址:",
+    "Traffic:",
+    "Expire:",
+)
+
+fun isNetoInfoPseudoNode(name: String?): Boolean {
+    val s = name?.trim().orEmpty()
+    if (s.isEmpty()) return false
+    return NETO_INFO_NODE_KEYWORDS.any { kw ->
+        s.startsWith(kw, ignoreCase = true) || s.contains(kw, ignoreCase = true)
+    }
 }
