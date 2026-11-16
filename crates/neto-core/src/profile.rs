@@ -358,6 +358,18 @@ pub async fn fetch_and_parse_subscription(
             qp.append_pair("types", SUBSCRIPTION_NODE_TYPES);
             qp.append_pair("flag", "aerion");
         }
+    } else if flag.eq_ignore_ascii_case("meta") {
+        let kept: Vec<(String, String)> = parsed_url
+            .query_pairs()
+            .filter(|(key, _)| key != "flag")
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect();
+        let mut query = parsed_url.query_pairs_mut();
+        query.clear();
+        for (key, value) in kept {
+            query.append_pair(&key, &value);
+        }
+        query.append_pair("flag", "meta");
     }
     let ua = user_agent
         .map(str::trim)

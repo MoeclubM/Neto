@@ -431,8 +431,20 @@ impl NetoController {
         id: &str,
         name: &str,
         url: &str,
+        payload: ParsedProfilePayload,
+        preserve_routes: bool,
+    ) -> Result<()> {
+        self.upsert_managed_profile_with_format(id, name, url, payload, preserve_routes, None)
+    }
+
+    pub fn upsert_managed_profile_with_format(
+        &self,
+        id: &str,
+        name: &str,
+        url: &str,
         mut payload: ParsedProfilePayload,
         preserve_routes: bool,
+        flag: Option<&str>,
     ) -> Result<()> {
         {
             let mut guard = self.state.lock().expect("controller state lock poisoned");
@@ -465,6 +477,9 @@ impl NetoController {
                         }
                         existing.name = name.to_string();
                         existing.url = url.to_string();
+                        if let Some(flag) = flag {
+                            existing.flag = flag.to_string();
+                        }
                         existing.updated_at_unix = telemetry::now_ms() / 1000;
                         existing.user_info = payload.user_info.clone();
                         existing.nodes = payload.nodes.clone();
@@ -495,7 +510,7 @@ impl NetoController {
                         name: name.to_string(),
                         kind: "managed".to_string(),
                         url: url.to_string(),
-                        flag: "aerion".to_string(),
+                        flag: flag.unwrap_or("aerion").to_string(),
                         updated_at_unix: telemetry::now_ms() / 1000,
                         auto_update_mins: 30,
                         user_info: payload.user_info,
@@ -536,7 +551,14 @@ impl NetoController {
         let payload =
             fetch_and_parse_subscription(clean_url, effective_flag, Some(ua), None).await?;
         let user_info = payload.user_info.clone();
-        self.upsert_managed_profile(id, name, clean_url, payload)?;
+        self.upsert_managed_profile_with_format(
+            id,
+            name,
+            clean_url,
+            payload,
+            false,
+            Some(effective_flag),
+        )?;
         Ok(user_info)
     }
 
