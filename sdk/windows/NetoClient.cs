@@ -57,7 +57,7 @@ public sealed class NetoClient : IDisposable
                 SnapshotChanged?.Invoke(snap);
                 if (snap.Connection.Connected && _tickCount % 4 == 0 && !_probing)
                 {
-                    _ = ProbeTunnelAsync();
+                    _ = ProbeTunnelAsync(refreshSnapshot: false);
                 }
                 if (_tickCount % 60 == 0 && !_autoRefreshing)
                 {
@@ -83,27 +83,6 @@ public sealed class NetoClient : IDisposable
         finally
         {
             _polling = false;
-        }
-    }
-
-    private async Task ProbeTunnelAsync()
-    {
-        _probing = true;
-        try
-        {
-            await NetoNativeBridge.CallAsync("probe_tunnel");
-        }
-        catch (Exception ex)
-        {
-            if (!_disposed)
-            {
-                LastActionError = $"连接检查失败：{ex.Message}";
-                SnapshotChanged?.Invoke(Snapshot);
-            }
-        }
-        finally
-        {
-            _probing = false;
         }
     }
 
@@ -201,16 +180,23 @@ public sealed class NetoClient : IDisposable
     public Task TestGroupNodesAsync(string groupName) =>
         InvokeSnapshotCallAsync("test_group_nodes", new { group_name = groupName });
 
-    public async Task ProbeTunnelAsync()
+    public async Task ProbeTunnelAsync(bool refreshSnapshot = true)
     {
+        if (_disposed || _probing) return;
+        _probing = true;
         try
         {
             await NetoNativeBridge.CallAsync("probe_tunnel");
+            if (refreshSnapshot) await RefreshSnapshotAsync();
         }
-        catch
+        catch (Exception ex)
         {
+            if (!_disposed) ReportActionError($"连接检查失败：{ex.Message}");
         }
-        await RefreshSnapshotAsync();
+        finally
+        {
+            _probing = false;
+        }
     }
 
     public async Task<NetoNetworkCheckResult?> CheckConnectivityAsync()
