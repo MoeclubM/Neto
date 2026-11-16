@@ -102,7 +102,8 @@ jobs:
           if (-not (Test-Path $iscc)) {
             choco install innosetup --no-progress --yes
           }
-          & $iscc '/DMyAppVersion=0.0.12' '/DOutputBaseFilename=Neto-windows-x64-setup' 'apps/windows/installer/Neto.iss'
+          $ver = ([xml](Get-Content 'apps/windows/Neto.Windows.csproj')).Project.PropertyGroup.Version | Where-Object { $_ }
+          & $iscc "/DMyAppVersion=$ver" '/DOutputBaseFilename=Neto-windows-x64-setup' 'apps/windows/installer/Neto.iss'
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
           if (-not (Test-Path 'dist/Neto-windows-x64-setup.exe')) { throw 'Neto-windows-x64-setup.exe missing' }
       - name: Upload Windows installer
@@ -139,7 +140,8 @@ jobs:
           sudo apt-get install -y cmake pkg-config libclang-dev libgtk-4-dev libadwaita-1-dev dpkg-dev
       - name: Build & package Linux Wayland deb
         run: |
-          cargo build --release -p neto-linux
+          ver="$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml', 'rb'))['workspace']['package']['version'])")"
+          NETO_APP_VERSION="$ver" cargo build --release -p neto-linux
           pkg_root="dist/pkg-neto_${{ matrix.arch }}"
           mkdir -p "$pkg_root/DEBIAN" "$pkg_root/usr/bin" "$pkg_root/usr/share/applications" "$pkg_root/usr/share/icons/hicolor/scalable/apps"
           cp target/release/neto "$pkg_root/usr/bin/neto"
@@ -148,7 +150,7 @@ jobs:
           cp apps/linux/data/io.github.moeclubm.Neto.svg "$pkg_root/usr/share/icons/hicolor/scalable/apps/"
           cat > "$pkg_root/DEBIAN/control" <<EOF
           Package: neto
-          Version: 0.0.12
+          Version: $ver
           Section: net
           Priority: optional
           Architecture: ${{ matrix.arch }}
@@ -157,11 +159,11 @@ jobs:
           Description: Neto native subscription and proxy client for Linux Wayland
           EOF
           sed -i 's/^          //' "$pkg_root/DEBIAN/control"
-          dpkg-deb --root-owner-group --build "$pkg_root" "dist/neto_0.0.12_${{ matrix.arch }}.deb"
+          dpkg-deb --root-owner-group --build "$pkg_root" "dist/neto_${ver}_${{ matrix.arch }}.deb"
       - name: Upload Linux deb
         uses: actions/upload-artifact@v7
         with:
           name: neto-linux-${{ matrix.arch }}
           archive: false
-          path: dist/neto_0.0.12_${{ matrix.arch }}.deb
+          path: dist/neto_*_${{ matrix.arch }}.deb
           if-no-files-found: error
