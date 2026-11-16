@@ -30,7 +30,7 @@ val appVersionName = gitExactTag.removePrefix("v").ifEmpty {
     if (gitLatestTag.isNotEmpty()) {
         "${gitLatestTag.removePrefix("v")}-beta.$gitCommitsSinceLatestTag.$gitShortHash"
     } else {
-        "0.0.13-$gitShortHash"
+        "0.0.14-$gitShortHash"
     }
 }
 

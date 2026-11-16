@@ -289,7 +289,12 @@ public sealed class NodesPageView
         if (isGroupMode)
         {
             var nonEmptyGroups = snap.ProxyGroups.Where(g => g.Proxies.Count > 0).ToList();
-            var tabsRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            var tabsRow = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 8,
+                Margin = new Thickness(0, 0, 0, 18),
+            };
             foreach (var grp in nonEmptyGroups)
             {
                 var isTabActive = grp.Name == activeGroup!.Name;
@@ -340,7 +345,7 @@ public sealed class NodesPageView
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
                 VerticalScrollMode = ScrollMode.Disabled,
                 VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                Padding = new Thickness(0, 0, 0, 4),
+                Padding = new Thickness(0),
                 Content = tabsRow,
             };
             _groupsPanel.Children.Add(tabsScroll);

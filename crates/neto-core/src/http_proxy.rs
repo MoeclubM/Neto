@@ -36,7 +36,9 @@ impl HttpProxyBridge {
             while let Ok((client, _)) = listener.accept().await {
                 let socks = *upstream_clone.read().expect("upstream lock poisoned");
                 tokio::spawn(async move {
-                    let _ = handle_http_client(client, socks).await;
+                    if let Err(error) = handle_http_client(client, socks).await {
+                        log::warn!("HTTP proxy request failed: {error:#}");
+                    }
                 });
             }
         });
