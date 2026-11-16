@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "0.0.12"
+  #define MyAppVersion "0.0.13"
 #endif
 
 #ifndef PublishDir
@@ -78,6 +78,21 @@ begin
     ShellExec('runas', SvcExe, Args, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
+procedure StopInstalledTunService();
+var
+  SvcExe: String;
+  ResultCode: Integer;
+begin
+  SvcExe := ExpandConstant('{app}\neto-service.exe');
+  if FileExists(SvcExe) then
+    RunServiceCommand('stop --id "Neto"')
+  else if IsAdminInstallMode() then
+    Exec(ExpandConstant('{sys}\sc.exe'), 'stop NetoTunService', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+  else
+    ShellExec('runas', ExpandConstant('{sys}\sc.exe'), 'stop NetoTunService', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(300);
+end;
+
 procedure StopRunningNeto();
 var
   ResultCode: Integer;
@@ -92,18 +107,14 @@ begin
     RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Neto\SystemProxy');
   end;
   if HasInstalledTunService() then
-    RunServiceCommand('stop --id "Neto"');
-end;
-
-function InitializeSetup(): Boolean;
-begin
-  StopRunningNeto();
-  Result := True;
+    StopInstalledTunService();
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if (CurStep = ssPostInstall) and HasInstalledTunService() then
+  if CurStep = ssInstall then
+    StopRunningNeto()
+  else if (CurStep = ssPostInstall) and HasInstalledTunService() then
     RunServiceCommand('install --id "Neto"');
 end;
 
