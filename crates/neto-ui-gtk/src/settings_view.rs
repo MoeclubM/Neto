@@ -603,6 +603,12 @@ impl SettingsView {
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
                                     .to_string();
+                                let notes = val
+                                    .get("release_notes")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .trim()
+                                    .to_string();
                                 *pending_c.borrow_mut() = Some(PendingLinuxUpdate {
                                     latest_version: latest.to_string(),
                                     download_url: dl,
@@ -617,6 +623,38 @@ impl SettingsView {
                                     &format!("检测到新版本 {latest}，可立即下载更新。"),
                                     None,
                                 );
+                                let dialog = adw::AlertDialog::builder()
+                                    .heading(format!("发现新版本 {latest}"))
+                                    .body(format!("当前版本 v{cur} → 最新版本 {latest}"))
+                                    .build();
+                                if !notes.is_empty() {
+                                    let notes_lbl = gtk::Label::builder()
+                                        .label(&notes)
+                                        .wrap(true)
+                                        .xalign(0.0)
+                                        .selectable(true)
+                                        .build();
+                                    let scroll = gtk::ScrolledWindow::builder()
+                                        .min_content_height(100)
+                                        .max_content_height(260)
+                                        .propagate_natural_height(true)
+                                        .child(&notes_lbl)
+                                        .build();
+                                    dialog.set_extra_child(Some(&scroll));
+                                }
+                                dialog.add_response("later", "稍后");
+                                dialog.add_response("download", "下载更新");
+                                dialog.set_response_appearance(
+                                    "download",
+                                    adw::ResponseAppearance::Suggested,
+                                );
+                                let dl_btn = btn_c.clone();
+                                dialog.connect_response(None, move |_, resp| {
+                                    if resp == "download" {
+                                        dl_btn.emit_clicked();
+                                    }
+                                });
+                                dialog.present(row_c.root().as_ref());
                             } else {
                                 row_c.set_subtitle(&format!("v{cur} · 已是最新版本"));
                                 btn_c.set_label("检查更新");

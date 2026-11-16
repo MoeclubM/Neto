@@ -281,7 +281,12 @@ class NetoVpnService : VpnService() {
 
         @JvmStatic
         fun onLog(level: String, message: String) {
-            Log.d("NetoCore", "[$level] $message")
+            when (level.lowercase()) {
+                "error" -> Log.e("NetoCore", message)
+                "warn" -> Log.w("NetoCore", message)
+                "info" -> Log.i("NetoCore", message)
+                else -> Log.d("NetoCore", message)
+            }
         }
 
         @JvmStatic

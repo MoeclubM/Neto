@@ -17,14 +17,6 @@ mod imp {
         Arc::new(AndroidPlatformHooks)
     }
 
-    pub fn init_android_logger(tag: &'static str) {
-        android_logger::init_once(
-            android_logger::Config::default()
-                .with_tag(tag)
-                .with_max_level(log::LevelFilter::Info),
-        );
-    }
-
     pub fn register_vpn_service_class(
         env: &Env<'_>,
         service_class: &JClass<'_>,

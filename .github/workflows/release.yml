@@ -33,10 +33,25 @@ jobs:
           apk="$(find apps/android/build/outputs/apk -type f -name '*-arm64-v8a-release.apk' -print -quit)"
           mkdir -p dist
           cp "$apk" "dist/Neto-${GITHUB_REF_NAME}-android-arm64-v8a.apk"
+      - name: Generate release notes
+        shell: bash
+        run: |
+          prev_tag="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          {
+            echo "## 更新日志"
+            if [ -n "$prev_tag" ]; then
+              git log --no-merges --pretty=format:'- %s' "${prev_tag}..HEAD"
+              echo ""
+              echo ""
+              echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${prev_tag}...${GITHUB_REF_NAME}"
+            else
+              git log --no-merges -n 20 --pretty=format:'- %s' HEAD
+            fi
+          } > RELEASE_NOTES.md
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/Neto-${{ github.ref_name }}-android-arm64-v8a.apk
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
 
   windows:
     runs-on: windows-2022

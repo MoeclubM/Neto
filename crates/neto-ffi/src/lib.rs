@@ -193,7 +193,6 @@ mod android_jni {
         user_agent: JString<'local>,
         service_class: JClass<'local>,
     ) -> JString<'local> {
-        neto_platform_android::init_android_logger("Neto");
         env.with_env(|env| -> JniResult<JString<'local>> {
             neto_platform_android::register_vpn_service_class(env, &service_class)?;
             let dir = data_dir.try_to_string(env).unwrap_or_default();
